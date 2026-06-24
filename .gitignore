@@ -1,0 +1,20 @@
+# Local private configuration
+config.php
+
+# Runtime data
+data/*
+!data/.gitkeep
+
+# Logs / DB / generated HLS
+*.log
+*.sqlite
+*.sqlite-*
+*.m3u8
+*.ts
+*.m4s
+*.mp4
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,2406 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Lampa Sync Player</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+    <style>
+        :root {
+            --accent: #7c5cff;
+            --accent2: #22d3ee;
+            --line: rgba(255, 255, 255, .16);
+            --muted: rgba(255, 255, 255, .68);
+            --panel: rgba(13, 13, 16, .78);
+            --vw: 100vw;
+            --vh: 100vh;
+        }
+
+        * {
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            width: var(--vw);
+            height: var(--vh);
+            min-width: var(--vw);
+            min-height: var(--vh);
+            background: #000;
+            color: #fff;
+            overflow: hidden;
+            overscroll-behavior: none;
+            touch-action: manipulation;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+        }
+
+        body {
+            position: fixed;
+            inset: 0;
+        }
+
+        #app {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: var(--vw);
+            height: var(--vh);
+            overflow: hidden;
+            background:
+                radial-gradient(circle at 15% 10%, rgba(124, 92, 255, .22), transparent 36%),
+                #000;
+            isolation: isolate;
+        }
+
+        #video {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            background: #000;
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        #shade {
+            position: absolute;
+            inset: 0;
+            z-index: 2;
+            pointer-events: none;
+            background:
+                linear-gradient(to bottom, rgba(0, 0, 0, .76), transparent 25%, transparent 62%, rgba(0, 0, 0, .90)),
+                linear-gradient(to right, rgba(0,0,0,.22), transparent 18%, transparent 82%, rgba(0,0,0,.18));
+            transition: opacity .22s ease;
+        }
+
+        #top {
+            position: absolute;
+            z-index: 30;
+            top: max(8px, env(safe-area-inset-top));
+            left: max(10px, env(safe-area-inset-left));
+            right: max(10px, env(safe-area-inset-right));
+            min-height: 48px;
+            display: flex;
+            gap: 12px;
+            align-items: flex-start;
+            pointer-events: auto;
+            transition: opacity .22s ease;
+        }
+
+        #tw {
+            min-width: 0;
+            flex: 1;
+            padding-top: 2px;
+        }
+
+        #title {
+            font-size: clamp(15px, 2vw, 20px);
+            font-weight: 800;
+            line-height: 1.18;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            text-shadow: 0 2px 8px #000;
+        }
+
+        #meta {
+            margin-top: 6px;
+            display: flex;
+            gap: 7px;
+            flex-wrap: wrap;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .pill {
+            padding: 4px 8px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: rgba(0, 0, 0, .38);
+            backdrop-filter: blur(12px);
+            white-space: nowrap;
+        }
+
+        .ok {
+            color: #baffd5;
+            border-color: rgba(37, 211, 102, .45);
+        }
+
+        .warn {
+            color: #ffe0a3;
+            border-color: rgba(255, 190, 80, .45);
+        }
+
+        .btn {
+            appearance: none;
+            border: 1px solid var(--line);
+            background: rgba(0, 0, 0, .46);
+            color: #fff;
+            border-radius: 14px;
+            min-width: 42px;
+            height: 42px;
+            padding: 0 12px;
+            font-size: 17px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            backdrop-filter: blur(14px);
+            pointer-events: auto;
+            touch-action: manipulation;
+        }
+
+        .btn:active {
+            transform: scale(.96);
+        }
+
+        .prepare-btn {
+            flex: 0 0 auto;
+            min-width: 118px;
+            height: 42px;
+            padding: 0 14px;
+            font-size: 13px;
+            font-weight: 800;
+            letter-spacing: .01em;
+            white-space: nowrap;
+            background: linear-gradient(135deg, rgba(124,92,255,.42), rgba(34,211,238,.24));
+            border-color: rgba(255,255,255,.24);
+            box-shadow: 0 8px 28px rgba(0,0,0,.24);
+        }
+
+        .prepare-btn.preparing {
+            color: #ffe0a3;
+            border-color: rgba(255,190,80,.55);
+            background: rgba(0,0,0,.50);
+        }
+
+        .prepare-btn.ready {
+            color: #baffd5;
+            border-color: rgba(37,211,102,.55);
+            background: rgba(10,90,45,.34);
+        }
+
+        .prepare-btn.delete {
+            color: #ffd0d0;
+            border-color: rgba(255,120,120,.52);
+            background: rgba(120,0,0,.36);
+        }
+
+        #center {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            z-index: 20;
+            transform: translate(-50%, -50%);
+            width: 84px;
+            height: 84px;
+            border-radius: 50%;
+            border: 1px solid rgba(255, 255, 255, .28);
+            background: rgba(0, 0, 0, .52);
+            color: #fff;
+            font-size: 38px;
+            cursor: pointer;
+            backdrop-filter: blur(18px);
+            pointer-events: auto;
+            touch-action: manipulation;
+            transition: opacity .22s ease, transform .12s ease;
+        }
+
+        #center:active {
+            transform: translate(-50%, -50%) scale(.96);
+        }
+
+        #status {
+            position: absolute;
+            z-index: 22;
+            left: 50%;
+            top: calc(50% + 72px);
+            transform: translateX(-50%);
+            min-width: min(430px, calc(var(--vw) - 32px));
+            max-width: calc(var(--vw) - 32px);
+            padding: 12px 14px;
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            background: rgba(0, 0, 0, .60);
+            backdrop-filter: blur(18px);
+            text-align: center;
+            font-size: 13px;
+            line-height: 1.45;
+            pointer-events: none;
+            transition: opacity .22s ease;
+        }
+
+        .hide {
+            display: none !important;
+        }
+
+        .spin {
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(255, 255, 255, .25);
+            border-top-color: #fff;
+            border-radius: 50%;
+            display: inline-block;
+            vertical-align: -4px;
+            margin-right: 8px;
+            animation: spin .8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        #controls {
+            position: absolute;
+            z-index: 40;
+            left: max(10px, env(safe-area-inset-left));
+            right: max(10px, env(safe-area-inset-right));
+            bottom: max(10px, env(safe-area-inset-bottom));
+            pointer-events: none;
+            transition: opacity .22s ease;
+        }
+
+        #progWrap {
+            position: relative;
+            z-index: 41;
+            min-height: 30px;
+            padding: 10px 0 9px;
+            cursor: pointer;
+            pointer-events: auto;
+            touch-action: none;
+        }
+
+        #prog {
+            position: relative;
+            height: 8px;
+            background: rgba(255, 255, 255, .22);
+            border-radius: 999px;
+            overflow: visible;
+        }
+
+        #buf,
+        #bar {
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 0;
+            border-radius: 999px;
+            pointer-events: none;
+        }
+
+        #buf {
+            background: rgba(255, 255, 255, .34);
+        }
+
+        #bar {
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+        }
+
+        #knob {
+            position: absolute;
+            top: 50%;
+            left: 0;
+            width: 18px;
+            height: 18px;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+            background: #fff;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, .55);
+            pointer-events: none;
+        }
+
+        #row {
+            position: relative;
+            z-index: 42;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border: 1px solid var(--line);
+            border-radius: 22px;
+            background: var(--panel);
+            backdrop-filter: blur(18px);
+            pointer-events: auto;
+            touch-action: manipulation;
+        }
+
+        #time {
+            min-width: 150px;
+            font-variant-numeric: tabular-nums;
+            font-size: 13px;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+
+        #spacer {
+            flex: 1;
+            min-width: 4px;
+            pointer-events: none;
+        }
+
+        #vol {
+            width: 110px;
+            accent-color: var(--accent);
+            pointer-events: auto;
+            touch-action: manipulation;
+        }
+
+        #err {
+            position: absolute;
+            z-index: 60;
+            left: 16px;
+            right: 16px;
+            bottom: calc(max(10px, env(safe-area-inset-bottom)) + 92px);
+            display: none;
+            padding: 14px 16px;
+            background: rgba(150, 0, 0, .88);
+            border-radius: 18px;
+            border: 1px solid rgba(255, 255, 255, .18);
+            font-size: 13px;
+            line-height: 1.5;
+            pointer-events: auto;
+        }
+
+        #toast {
+            position: absolute;
+            z-index: 61;
+            left: 50%;
+            top: 22%;
+            transform: translateX(-50%);
+            display: none;
+            padding: 10px 14px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: rgba(0, 0, 0, .62);
+            backdrop-filter: blur(14px);
+            font-size: 13px;
+            pointer-events: none;
+        }
+
+        body.clean #shade,
+        body.clean #top,
+        body.clean #controls,
+        body.clean #center,
+        body.clean #status {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        body.clean #video,
+        body.clean #app {
+            pointer-events: auto;
+        }
+
+        @media (max-width: 720px) {
+            #top {
+                left: max(10px, env(safe-area-inset-left));
+                right: max(10px, env(safe-area-inset-right));
+            }
+
+            #controls {
+                left: max(8px, env(safe-area-inset-left));
+                right: max(8px, env(safe-area-inset-right));
+            }
+
+            #row {
+                gap: 6px;
+                padding: 8px;
+                border-radius: 18px;
+            }
+
+            .btn {
+                min-width: 38px;
+                height: 38px;
+                border-radius: 13px;
+                font-size: 15px;
+                padding: 0 9px;
+            }
+
+            .prepare-btn {
+                min-width: 96px;
+                height: 38px;
+                padding: 0 10px;
+                font-size: 12px;
+            }
+
+            #time {
+                min-width: 112px;
+                font-size: 12px;
+            }
+
+            #vol {
+                display: none;
+            }
+
+            #center {
+                width: 72px;
+                height: 72px;
+                font-size: 32px;
+            }
+
+            .pill {
+                font-size: 11px;
+                padding: 3px 7px;
+            }
+        }
+
+        /*
+         * iPhone landscape:
+         * The progress area and button row must never overlap.
+         * Hit routing in JS additionally ignores progress if y is inside #row.
+         */
+        @media (orientation: landscape) and (max-height: 540px) {
+            #top {
+                min-height: 42px;
+                padding: 4px 0;
+                align-items: center;
+            }
+
+            #title {
+                font-size: 14px;
+                line-height: 1.15;
+            }
+
+            #meta {
+                margin-top: 3px;
+                gap: 5px;
+                font-size: 10px;
+                max-height: 24px;
+                overflow: hidden;
+                flex-wrap: nowrap;
+            }
+
+            #prepared {
+                display: none;
+            }
+
+            .pill {
+                padding: 2px 7px;
+                line-height: 18px;
+            }
+
+            .btn {
+                min-width: 40px;
+                height: 40px;
+                border-radius: 14px;
+                font-size: 15px;
+                padding: 0 10px;
+            }
+
+            #center {
+                width: 68px;
+                height: 68px;
+                font-size: 30px;
+            }
+
+            #controls {
+                bottom: max(8px, env(safe-area-inset-bottom));
+            }
+
+            #progWrap {
+                min-height: 24px;
+                padding: 4px 0 8px;
+                margin-bottom: 4px;
+            }
+
+            #row {
+                max-width: min(660px, calc(var(--vw) - env(safe-area-inset-left) - env(safe-area-inset-right) - 24px));
+                margin: 0 auto;
+                padding: 7px 8px;
+                gap: 7px;
+                border-radius: 18px;
+            }
+
+            #time {
+                min-width: 108px;
+                font-size: 12px;
+            }
+
+            #vol {
+                display: block;
+                width: 82px;
+                min-width: 70px;
+                max-width: 16vw;
+            }
+
+            #status {
+                top: 50%;
+                max-width: min(420px, calc(var(--vw) - env(safe-area-inset-left) - env(safe-area-inset-right) - 32px));
+            }
+        }
+
+        @media (orientation: landscape) and (max-height: 420px) {
+            #row {
+                max-width: min(610px, calc(var(--vw) - env(safe-area-inset-left) - env(safe-area-inset-right) - 28px));
+            }
+
+            #vol {
+                width: 70px;
+            }
+
+            #time {
+                min-width: 104px;
+            }
+        }
+    
+        /* ===== Lampa Sync v5.7: dedicated iPhone landscape mode ===== */
+        body.iphone-landscape #progWrap {
+            display: none !important;
+            pointer-events: none !important;
+        }
+
+        body.iphone-landscape #controls {
+            position: fixed !important;
+            z-index: 2147483000 !important;
+            left: max(10px, env(safe-area-inset-left)) !important;
+            right: max(10px, env(safe-area-inset-right)) !important;
+            bottom: max(14px, env(safe-area-inset-bottom)) !important;
+            pointer-events: auto !important;
+            transform: translateZ(0);
+        }
+
+        body.iphone-landscape #row {
+            max-width: min(560px, calc(var(--vw) - env(safe-area-inset-left) - env(safe-area-inset-right) - 24px)) !important;
+            margin: 0 auto !important;
+            padding: 8px 9px !important;
+            gap: 8px !important;
+            border-radius: 20px !important;
+            pointer-events: auto !important;
+            touch-action: manipulation !important;
+            transform: translateZ(0);
+        }
+
+        body.iphone-landscape #row .btn {
+            min-width: 42px !important;
+            height: 42px !important;
+            padding: 0 11px !important;
+            border-radius: 14px !important;
+            font-size: 15px !important;
+            pointer-events: auto !important;
+            touch-action: manipulation !important;
+        }
+
+        body.iphone-landscape #vol,
+        body.iphone-landscape #spacer {
+            display: none !important;
+        }
+
+        body.iphone-landscape #time {
+            min-width: 112px !important;
+            font-size: 12px !important;
+            text-align: center !important;
+        }
+
+        body.iphone-landscape #top {
+            position: fixed !important;
+            z-index: 2147482990 !important;
+            top: max(8px, env(safe-area-inset-top)) !important;
+            left: max(10px, env(safe-area-inset-left)) !important;
+            right: max(10px, env(safe-area-inset-right)) !important;
+            pointer-events: auto !important;
+            transform: translateZ(0);
+        }
+
+        body.iphone-landscape #prepareBtn {
+            min-width: 88px !important;
+            height: 36px !important;
+            padding: 0 9px !important;
+            border-radius: 13px !important;
+            font-size: 11px !important;
+        }
+
+        body.iphone-landscape #center {
+            position: fixed !important;
+            z-index: 2147482980 !important;
+            width: 68px !important;
+            height: 68px !important;
+            font-size: 30px !important;
+            pointer-events: auto !important;
+            touch-action: manipulation !important;
+            transform: translate(-50%, -50%) translateZ(0);
+        }
+
+        body.iphone-landscape #center:active {
+            transform: translate(-50%, -50%) scale(.96) translateZ(0);
+        }
+
+        body.iphone-landscape #prepared {
+            display: none !important;
+        }
+
+        body.iphone-landscape #meta {
+            flex-wrap: nowrap !important;
+            max-height: 24px !important;
+            overflow: hidden !important;
+            font-size: 10px !important;
+        }
+
+        body.iphone-landscape #title {
+            font-size: 14px !important;
+            line-height: 1.15 !important;
+        }
+
+        body.iphone-landscape #video {
+            pointer-events: none !important;
+        }
+
+        body.iphone-landscape #shade {
+            pointer-events: none !important;
+        }
+
+    
+        /* ===== Lampa Sync v5.8: separate iPhone landscape control layer ===== */
+
+        #iphoneHud,
+        #iphonePanel {
+            display: none;
+        }
+
+        body.iphone-landscape #controls {
+            display: none !important;
+            pointer-events: none !important;
+        }
+
+        body.iphone-landscape #iphoneHud {
+            display: block !important;
+            position: fixed !important;
+            z-index: 2147483000 !important;
+            left: max(12px, env(safe-area-inset-left)) !important;
+            right: max(12px, env(safe-area-inset-right)) !important;
+            bottom: calc(max(14px, env(safe-area-inset-bottom)) + 72px) !important;
+            pointer-events: none !important;
+        }
+
+        body.iphone-landscape #iphoneReadout {
+            width: 100%;
+            text-align: center;
+            font-size: 12px;
+            line-height: 18px;
+            color: rgba(255,255,255,.92);
+            text-shadow: 0 1px 6px rgba(0,0,0,.9);
+            font-variant-numeric: tabular-nums;
+            margin-bottom: 7px;
+            pointer-events: none;
+        }
+
+        body.iphone-landscape #iphoneProgress {
+            position: relative;
+            width: 100%;
+            height: 7px;
+            border-radius: 999px;
+            overflow: hidden;
+            background: rgba(255,255,255,.22);
+            pointer-events: none;
+        }
+
+        body.iphone-landscape #iphoneBuf,
+        body.iphone-landscape #iphoneBar {
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 0;
+            border-radius: 999px;
+            pointer-events: none;
+        }
+
+        body.iphone-landscape #iphoneBuf {
+            background: rgba(255,255,255,.34);
+        }
+
+        body.iphone-landscape #iphoneBar {
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+        }
+
+        body.iphone-landscape #iphonePanel {
+            display: grid !important;
+            position: fixed !important;
+            z-index: 2147483100 !important;
+            left: max(8px, env(safe-area-inset-left)) !important;
+            right: max(8px, env(safe-area-inset-right)) !important;
+            bottom: max(10px, env(safe-area-inset-bottom)) !important;
+            height: 62px !important;
+            grid-template-columns: repeat(5, 1fr) !important;
+            gap: 8px !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            pointer-events: auto !important;
+            touch-action: manipulation !important;
+            transform: none !important;
+        }
+
+        body.iphone-landscape .iphoneBtn {
+            appearance: none !important;
+            -webkit-appearance: none !important;
+            width: 100% !important;
+            height: 62px !important;
+            min-width: 0 !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            border-radius: 18px !important;
+            border: 1px solid rgba(255,255,255,.18) !important;
+            background: rgba(13,13,16,.86) !important;
+            color: #fff !important;
+            font-size: 18px !important;
+            font-weight: 700 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            pointer-events: auto !important;
+            touch-action: manipulation !important;
+            transform: none !important;
+            backdrop-filter: none !important;
+            -webkit-user-select: none !important;
+            user-select: none !important;
+        }
+
+        body.iphone-landscape .iphoneBtn:active {
+            background: rgba(124,92,255,.55) !important;
+        }
+
+        body.iphone-landscape #center {
+            display: none !important;
+        }
+
+        body.iphone-landscape #top {
+            position: fixed !important;
+            z-index: 2147482900 !important;
+            pointer-events: auto !important;
+            transform: none !important;
+        }
+
+        body.iphone-landscape #prepared {
+            display: none !important;
+        }
+
+        body.iphone-landscape #meta {
+            flex-wrap: nowrap !important;
+            max-height: 24px !important;
+            overflow: hidden !important;
+            font-size: 10px !important;
+        }
+
+        body.iphone-landscape #title {
+            font-size: 14px !important;
+            line-height: 1.15 !important;
+        }
+
+    
+        /* ===== Lampa Sync v5.9: TV remote focus ===== */
+        body.remote-mode #top,
+        body.remote-mode #controls,
+        body.remote-mode #center,
+        body.remote-mode #status {
+            opacity: 1 !important;
+            pointer-events: auto !important;
+        }
+
+        body.remote-mode.clean #top,
+        body.remote-mode.clean #controls,
+        body.remote-mode.clean #center,
+        body.remote-mode.clean #status {
+            opacity: 1 !important;
+            pointer-events: auto !important;
+        }
+
+        .remote-focused {
+            outline: 3px solid rgba(34, 211, 238, .95) !important;
+            outline-offset: 3px !important;
+            box-shadow:
+                0 0 0 3px rgba(124, 92, 255, .55),
+                0 0 28px rgba(34, 211, 238, .42) !important;
+        }
+
+        body.remote-mode #row {
+            box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 8px 30px rgba(0,0,0,.35);
+        }
+
+    </style>
+</head>
+<body>
+<div id="app">
+    <video id="video" playsinline webkit-playsinline preload="auto"></video>
+    <div id="shade"></div>
+
+    <div id="top">
+        <button id="close" class="btn" type="button" aria-label="Закрыть">✕</button>
+        <div id="tw">
+            <div id="title">Загрузка...</div>
+            <div id="meta">
+                <span id="mode" class="pill warn">Подготовка</span>
+                <span id="quality" class="pill">fast</span>
+                <span id="prepared" class="pill">0 сегм.</span>
+            </div>
+        </div>
+        <button id="prepareBtn" class="btn prepare-btn" type="button" aria-label="Подготовить видео">⇩ Скачать</button>
+        <button id="queueBtn" class="btn" type="button" aria-label="Очередь подготовки">☰</button>
+    </div>
+
+    <button id="center" type="button" aria-label="Пуск/пауза">▶</button>
+
+    <div id="status">
+        <span class="spin"></span><span id="statusText">Подготовка видео...</span>
+    </div>
+
+    <div id="toast"></div>
+    <div id="err"></div>
+
+    <div id="controls">
+        <div id="progWrap" role="slider" aria-label="Позиция">
+            <div id="prog">
+                <div id="buf"></div>
+                <div id="bar"></div>
+                <div id="knob"></div>
+            </div>
+        </div>
+
+        <div id="row">
+            <button id="play" class="btn" type="button" aria-label="Пуск/пауза">▶</button>
+            <button id="back" class="btn" type="button" aria-label="Назад на 10 секунд">↶10</button>
+            <button id="fwd" class="btn" type="button" aria-label="Вперёд на 30 секунд">30↷</button>
+            <div id="time">0:00 / --:--</div>
+            <div id="spacer"></div>
+            <input id="vol" type="range" min="0" max="1" step="0.01" value="1" aria-label="Громкость">
+            <button id="fit" class="btn" type="button" aria-label="Режим отображения">▣</button>
+            <button id="full" class="btn" type="button" aria-label="На весь экран">⛶</button>
+        </div>
+    </div>
+
+    <div id="iphoneHud" aria-hidden="true">
+        <div id="iphoneReadout">0:00 / --:--</div>
+        <div id="iphoneProgress">
+            <div id="iphoneBuf"></div>
+            <div id="iphoneBar"></div>
+        </div>
+    </div>
+
+    <div id="iphonePanel" aria-label="iPhone controls">
+        <button id="ipPlay" class="iphoneBtn" type="button">▶</button>
+        <button id="ipBack" class="iphoneBtn" type="button">↶10</button>
+        <button id="ipFwd" class="iphoneBtn" type="button">30↷</button>
+        <button id="ipFit" class="iphoneBtn" type="button">▣</button>
+        <button id="ipFull" class="iphoneBtn" type="button">⛶</button>
+    </div>
+</div>
+
+<!-- Основная логика плеера: HLS, подготовка, прогресс и управление. -->
+<script>
+    const API = new URL('api.php', window.location.href).toString();
+
+    const qs = new URLSearchParams(location.search);
+    const src = qs.get('url');
+    const titleText = qs.get('title') || 'Видео';
+    const cid = qs.get('content_id') || hash(src || titleText);
+    const trans = qs.get('transcode') === '1' || qs.get('hls') === '1';
+    const q = qs.get('quality') || 'fast';
+    let activeQuality = q;
+
+    const app = document.getElementById('app');
+    const v = document.getElementById('video');
+    const title = document.getElementById('title');
+    const mode = document.getElementById('mode');
+    const quality = document.getElementById('quality');
+    const prepared = document.getElementById('prepared');
+    const prepareBtn = document.getElementById('prepareBtn');
+    const queueBtn = document.getElementById('queueBtn');
+    const statusBox = document.getElementById('status');
+    const statusText = document.getElementById('statusText');
+    const center = document.getElementById('center');
+    const play = document.getElementById('play');
+    const back = document.getElementById('back');
+    const fwd = document.getElementById('fwd');
+    const closeBtn = document.getElementById('close');
+    const full = document.getElementById('full');
+    const fit = document.getElementById('fit');
+    const progWrap = document.getElementById('progWrap');
+    const prog = document.getElementById('prog');
+    const bar = document.getElementById('bar');
+    const buf = document.getElementById('buf');
+    const knob = document.getElementById('knob');
+    const row = document.getElementById('row');
+    const time = document.getElementById('time');
+    const vol = document.getElementById('vol');
+    const err = document.getElementById('err');
+    const toast = document.getElementById('toast');
+    const iphonePanel = document.getElementById('iphonePanel');
+    const iphoneHud = document.getElementById('iphoneHud');
+    const iphoneReadout = document.getElementById('iphoneReadout');
+    const iphoneBar = document.getElementById('iphoneBar');
+    const iphoneBuf = document.getElementById('iphoneBuf');
+    const ipPlay = document.getElementById('ipPlay');
+    const ipBack = document.getElementById('ipBack');
+    const ipFwd = document.getElementById('ipFwd');
+    const ipFit = document.getElementById('ipFit');
+    const ipFull = document.getElementById('ipFull');
+
+    let hls = null;
+    let sid = 'sid_' + hash(cid);
+    let offset = 0;
+    let duration = 0;
+    let preparedUntil = 0;
+    let preparedSec = 0;
+    let saved = null;
+    let lastSync = 0;
+    let lastSaved = -1;
+    let timer = null;
+    let hideTimer = null;
+    let stopped = false;
+    let fitMode = 'contain';
+    let lastRoutedAt = 0;
+    let lastRoutedAction = '';
+    let remoteFocusIndex = 0;
+    let remoteModeTimer = null;
+    let hlsMediaRecoveries = 0;
+    let hlsSafeFallbackUsed = false;
+    const prepareStateKey = 'lampa_sync_prepare_ui_' + cid;
+    let prepareState = null;
+    let prepareUiTimer = null;
+    let preparedPlaybackLoaded = false;
+    let preparedMediaDuration = 0;
+    let preparedResumePending = 0;
+
+    quality.innerText = activeQuality;
+    title.innerText = titleText;
+    updateDeviceClasses();
+
+    if (!src) {
+        showError('Не передан url');
+    } else {
+        init();
+    }
+    async function init() {
+        bindViewport();
+        await loadPrepareState();
+        renderPrepareButton();
+        startPrepareUiTicker();
+
+        saved = normProg(await loadProgress());
+
+        if (saved && saved.duration > 0) {
+            duration = saved.duration;
+        }
+
+        let resume = saved && !saved.ended && saved.position > 5
+            ? Math.max(0, saved.position - 3)
+            : 0;
+
+        /*
+         * Старые версии prepared-HLS могли сохранить некорректную позицию,
+         * потому что offset уже входил в currentTime и затем прибавлялся второй раз.
+         * Если позиция явно выходит за длительность — не пытаемся продолжать с неё.
+         */
+        if (duration > 0 && resume > duration - 2) {
+            resume = 0;
+        }
+
+        bindEvents();
+
+        if (trans || needsProxy(src)) {
+            await startHls(resume, true);
+        } else {
+            await direct(src, resume);
+        }
+
+        resetHide();
+    }
+
+    // Подписывает кнопки, клавиатуру, сообщения от родительского окна и lifecycle-события.
+    function bindEvents() {
+        /*
+         * Video itself is intentionally not clickable.
+         * Background tap shows/hides controls; play/pause only via buttons.
+         */
+        app.addEventListener('click', e => {
+            if (isUiTarget(e.target)) return;
+            resetHide();
+        }, true);
+
+        app.addEventListener('touchend', e => {
+            if (isUiTarget(e.target)) return;
+            resetHide();
+        }, {capture: true, passive: true});
+
+        v.ontimeupdate = () => {
+            if (Date.now() - lastSync > 5000) {
+                lastSync = Date.now();
+                save(false);
+            }
+            ui();
+        };
+
+        v.onplay = v.onpause = state;
+
+        v.onended = () => {
+            save(true);
+            state();
+        };
+
+        v.onerror = () => showError('Видео не удалось воспроизвести. Код: ' + (v.error ? v.error.code : '?'));
+
+        bindButton(play, 'play', toggle);
+        bindButton(center, 'center', toggle);
+        bindButton(back, 'back', () => seek(globalTime() - 10));
+        bindButton(fwd, 'fwd', () => seek(globalTime() + 30));
+        bindButton(closeBtn, 'close', requestClose);
+        bindButton(full, 'full', toggleFullscreen);
+        bindButton(fit, 'fit', toggleFit);
+        bindButton(prepareBtn, 'prepare', togglePrepare);
+        bindButton(queueBtn, 'queue', openPrepareQueue);
+
+        bindVolume();
+        bindProgress();
+
+        bindLandscapeRouter();
+        bindIPhoneControls();
+
+        document.addEventListener('mousemove', resetHide, {passive: true});
+        document.addEventListener('touchstart', e => {
+            if (!isUiTarget(e.target)) resetHide();
+        }, {passive: true});
+
+        document.addEventListener('keydown', e => {
+            handleRemoteInput(e);
+        }, true);
+
+        window.addEventListener('message', e => {
+            const data = e.data || {};
+
+            if (data.type === 'lampa-sync-close') {
+                requestClose();
+                return;
+            }
+
+            if (data.type === 'lampa-sync-remote-key') {
+                handleRemoteInput(data);
+            }
+        });
+
+        window.addEventListener('beforeunload', shutdown);
+        window.addEventListener('pagehide', shutdown);
+    }
+
+    // Универсально привязывает кнопку к действию мыши/тача.
+    function bindButton(el, name, handler) {
+        if (!el) return;
+
+        let last = 0;
+
+        const run = e => {
+            stopEvent(e);
+
+            const now = Date.now();
+            if (now - last < 260) return;
+            last = now;
+
+            routeAction(name, handler);
+        };
+
+        el.addEventListener('click', run, {passive: false});
+        el.addEventListener('touchend', run, {passive: false});
+        el.addEventListener('pointerup', run, {passive: false});
+
+        ['touchstart', 'pointerdown', 'mousedown', 'mouseup'].forEach(type => {
+            el.addEventListener(type, e => e.stopPropagation(), {passive: true});
+        });
+    }
+
+    // Настраивает громкость и mute.
+    function bindVolume() {
+        if (!vol) return;
+
+        const update = e => {
+            e.stopPropagation();
+            v.volume = +vol.value;
+            v.muted = v.volume <= 0;
+        };
+
+        vol.addEventListener('input', update, {passive: true});
+        vol.addEventListener('change', update, {passive: true});
+        ['touchstart', 'touchend', 'pointerdown', 'pointerup', 'click'].forEach(type => {
+            vol.addEventListener(type, e => e.stopPropagation(), {passive: true});
+        });
+    }
+
+    // Настраивает перемотку по нижнему прогресс-бару.
+    function bindProgress() {
+        const run = e => {
+            if (isIPhoneLandscape()) {
+                stopEvent(e);
+                resetHide();
+                return;
+            }
+
+            stopEvent(e);
+            seekByPoint(getPoint(e));
+        };
+
+        progWrap.addEventListener('click', run, {passive: false});
+        progWrap.addEventListener('touchend', run, {passive: false});
+        progWrap.addEventListener('pointerup', run, {passive: false});
+        ['touchstart', 'pointerdown', 'mousedown'].forEach(type => {
+            progWrap.addEventListener(type, e => e.stopPropagation(), {passive: true});
+        });
+    }
+
+    // Разводит тачи в landscape-режиме iPhone, где элементы часто перекрываются.
+    function bindLandscapeRouter() {
+        const handler = e => {
+            if (!isIPhoneLandscape()) return;
+
+            const point = getPoint(e);
+            if (!point) return;
+
+            const h = viewportHeight();
+            const bottomZoneTop = h - 150;
+
+            /*
+             * Dedicated iPhone landscape layer:
+             * bottom 150px belongs only to iPhone panel.
+             * No progress/seek can happen here.
+             */
+            if (point.clientY >= bottomZoneTop) {
+                stopEvent(e);
+                routeIPhoneByX(point);
+                return;
+            }
+
+            const closeRect = rect(closeBtn);
+
+            if (inside(point, expand(closeRect, 18))) {
+                stopEvent(e);
+                routeAction('close', requestClose);
+                return;
+            }
+
+            resetHide();
+        };
+
+        document.addEventListener('touchstart', handler, {capture: true, passive: false});
+        document.addEventListener('touchend', handler, {capture: true, passive: false});
+        document.addEventListener('pointerdown', handler, {capture: true, passive: false});
+        document.addEventListener('pointerup', handler, {capture: true, passive: false});
+        document.addEventListener('click', handler, {capture: true, passive: false});
+    }
+
+
+    // Подключает отдельную нижнюю панель управления для iPhone landscape.
+
+    function bindIPhoneControls() {
+        bindButton(ipPlay, 'ipPlay', toggle);
+        bindButton(ipBack, 'ipBack', () => seek(globalTime() - 10));
+        bindButton(ipFwd, 'ipFwd', () => seek(globalTime() + 30));
+        bindButton(ipFit, 'ipFit', toggleFit);
+        bindButton(ipFull, 'ipFull', toggleFullscreen);
+
+        if (iphonePanel) {
+            ['touchstart', 'touchend', 'pointerdown', 'pointerup', 'click'].forEach(type => {
+                iphonePanel.addEventListener(type, e => {
+                    if (!isIPhoneLandscape()) return;
+                    stopEvent(e);
+                    routeIPhoneByX(getPoint(e));
+                }, {passive: false});
+            });
+        }
+    }
+
+    // Определяет действие iPhone-панели по координате X.
+    function routeIPhoneByX(point) {
+        if (!point) {
+            resetHide();
+            return;
+        }
+
+        const w = viewportWidth();
+        const x = Math.min(w - 1, Math.max(0, point.clientX));
+        const segment = Math.max(0, Math.min(4, Math.floor((x / Math.max(1, w)) * 5)));
+
+        if (segment === 0) {
+            routeAction('ipPlay', toggle);
+        } else if (segment === 1) {
+            routeAction('ipBack', () => seek(globalTime() - 10));
+        } else if (segment === 2) {
+            routeAction('ipFwd', () => seek(globalTime() + 30));
+        } else if (segment === 3) {
+            routeAction('ipFit', toggleFit);
+        } else {
+            routeAction('ipFull', toggleFullscreen);
+        }
+    }
+
+    // Возвращает актуальную ширину viewport с учётом iOS-особенностей.
+    function viewportWidth() {
+        return (window.visualViewport ? window.visualViewport.width : window.innerWidth) ||
+            document.documentElement.clientWidth ||
+            0;
+    }
+
+    // Определяет, на какую кнопку попал touch/click.
+    function findButtonAction(point) {
+        const actions = [
+            {el: play, name: 'play', handler: toggle},
+            {el: back, name: 'back', handler: () => seek(globalTime() - 10)},
+            {el: fwd, name: 'fwd', handler: () => seek(globalTime() + 30)},
+            {el: fit, name: 'fit', handler: toggleFit},
+            {el: full, name: 'full', handler: toggleFullscreen},
+            {el: vol, name: 'vol', handler: () => volumeByPoint(point)},
+            {el: closeBtn, name: 'close', handler: requestClose}
+        ];
+
+        for (const item of actions) {
+            if (!item.el) continue;
+
+            if (inside(point, expand(rect(item.el), 12))) {
+                return item;
+            }
+        }
+
+        return null;
+    }
+
+    // Определяет кнопку нижней iPhone-панели.
+    function findIPhoneBottomAction(point) {
+        const actions = [
+            {el: play, name: 'play', handler: toggle},
+            {el: back, name: 'back', handler: () => seek(globalTime() - 10)},
+            {el: fwd, name: 'fwd', handler: () => seek(globalTime() + 30)},
+            {el: fit, name: 'fit', handler: toggleFit},
+            {el: full, name: 'full', handler: toggleFullscreen}
+        ].filter(item => item.el);
+
+        /*
+         * First: real button rectangles.
+         */
+        for (const item of actions) {
+            if (inside(point, expand(rect(item.el), 20, 22))) {
+                return item;
+            }
+        }
+
+        /*
+         * Fallback for iPhone after rotation:
+         * If y is already in the bottom control zone, pick nearest button by X.
+         * This avoids accidental seek because progress is disabled here.
+         */
+        let best = null;
+        let bestDistance = Infinity;
+
+        for (const item of actions) {
+            const r = rect(item.el);
+            const cx = r.left + r.width / 2;
+            const distance = Math.abs(point.clientX - cx);
+
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = item;
+            }
+        }
+
+        return bestDistance <= 76 ? best : null;
+    }
+
+    // Выполняет действие и гасит исходное событие.
+    function routeAction(name, handler) {
+        const now = Date.now();
+
+        if (name === lastRoutedAction && now - lastRoutedAt < 240) {
+            return;
+        }
+
+        lastRoutedAction = name;
+        lastRoutedAt = now;
+
+        resetHide();
+        handler();
+    }
+
+    // Перематывает видео по позиции клика на прогресс-баре.
+    function seekByPoint(point) {
+        const d = total();
+        if (!d || !point) return;
+
+        const r = rect(prog);
+        const p = Math.min(1, Math.max(0, (point.clientX - r.left) / r.width));
+
+        seek(d * p);
+    }
+
+    // Меняет громкость по координате на слайдере.
+    function volumeByPoint(point) {
+        const r = rect(vol);
+        const p = Math.min(1, Math.max(0, (point.clientX - r.left) / r.width));
+
+        vol.value = String(p);
+        v.volume = p;
+        v.muted = p <= 0;
+    }
+
+    // Проверяет телефонный landscape-режим.
+    function isLandscapePhone() {
+        return isIPhoneLandscape();
+    }
+
+    // Определяет iPhone/iPod по userAgent/platform.
+    function isIPhoneLike() {
+        const ua = navigator.userAgent || '';
+        const platform = navigator.platform || '';
+        const maxTouch = navigator.maxTouchPoints || 0;
+        const minScreen = Math.min(screen.width || 0, screen.height || 0);
+
+        return /iPhone|iPod/i.test(ua) ||
+            /iPhone|iPod/i.test(platform) ||
+            (maxTouch > 0 && minScreen > 0 && minScreen <= 430 && !/iPad/i.test(ua));
+    }
+
+    // Проверяет специальный режим iPhone landscape.
+    function isIPhoneLandscape() {
+        const w = window.visualViewport ? window.visualViewport.width : window.innerWidth;
+        const h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+
+        return isIPhoneLike() && w > h && h <= 540;
+    }
+    function viewportHeight() {
+        return (window.visualViewport ? window.visualViewport.height : window.innerHeight) ||
+            document.documentElement.clientHeight ||
+            0;
+    }
+
+    // Обновляет CSS-классы устройства на body.
+    function updateDeviceClasses() {
+        const iphone = isIPhoneLike();
+        const iphoneLandscape = isIPhoneLandscape();
+
+        document.body.classList.toggle('iphone', iphone);
+        document.body.classList.toggle('iphone-landscape', iphoneLandscape);
+    }
+
+    // Отслеживает resize/orientationchange и обновляет CSS-переменные viewport.
+    function bindViewport() {
+        const apply = () => {
+            const w = Math.round((window.visualViewport ? window.visualViewport.width : window.innerWidth) || document.documentElement.clientWidth || 0);
+            const h = Math.round((window.visualViewport ? window.visualViewport.height : window.innerHeight) || document.documentElement.clientHeight || 0);
+
+            if (w > 0) document.documentElement.style.setProperty('--vw', w + 'px');
+            if (h > 0) document.documentElement.style.setProperty('--vh', h + 'px');
+
+            updateDeviceClasses();
+            updateRemoteFocus();
+
+            document.body.classList.remove('clean');
+            setTimeout(resetHide, 250);
+        };
+
+        apply();
+
+        window.addEventListener('resize', apply, {passive: true});
+        window.addEventListener('orientationchange', () => {
+            setTimeout(apply, 60);
+            setTimeout(apply, 300);
+            setTimeout(apply, 900);
+        }, {passive: true});
+
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', apply, {passive: true});
+            window.visualViewport.addEventListener('scroll', apply, {passive: true});
+        }
+    }
+    function rect(el) {
+        return el.getBoundingClientRect();
+    }
+    function expand(r, x, y) {
+        y = typeof y === 'number' ? y : x;
+
+        return {
+            left: r.left - x,
+            right: r.right + x,
+            top: r.top - y,
+            bottom: r.bottom + y,
+            width: r.width + x * 2,
+            height: r.height + y * 2
+        };
+    }
+    function inside(point, r) {
+        return point.clientX >= r.left &&
+            point.clientX <= r.right &&
+            point.clientY >= r.top &&
+            point.clientY <= r.bottom;
+    }
+    function getPoint(e) {
+        if (e && e.changedTouches && e.changedTouches[0]) return e.changedTouches[0];
+        if (e && e.touches && e.touches[0]) return e.touches[0];
+        return e;
+    }
+    function stopEvent(e) {
+        if (!e) return;
+
+        if (e.cancelable && typeof e.preventDefault === 'function') {
+            e.preventDefault();
+        }
+
+        if (typeof e.stopPropagation === 'function') {
+            e.stopPropagation();
+        }
+
+        if (typeof e.stopImmediatePropagation === 'function') {
+            e.stopImmediatePropagation();
+        }
+    }
+    function isUiTarget(target) {
+        return !!(target && target.closest && target.closest('#top, #controls, #row, #progWrap, #iphonePanel, #iphoneHud, #status, #err, #toast, button, input, .btn, .iphoneBtn'));
+    }
+
+
+    // Принимает события пульта/клавиатуры из родительского окна Lampa.
+
+    function handleRemoteInput(e) {
+        const key = String(e.key || '');
+        const code = String(e.code || '');
+        const keyCode = Number(e.keyCode || e.which || 0);
+
+        const handled = handleRemoteKey(key, code, keyCode);
+
+        if (handled) {
+            stopEvent(e);
+        }
+
+        return handled;
+    }
+
+    // Преобразует клавиши пульта в действия плеера.
+    function handleRemoteKey(key, code, keyCode) {
+        const k = key.toLowerCase();
+
+        enableRemoteMode();
+
+        if (isBackKey(k, code, keyCode)) {
+            requestClose();
+            return true;
+        }
+
+        if (isPlayPauseKey(k, code, keyCode)) {
+            routeAction('remoteToggle', toggle);
+            return true;
+        }
+
+        if (isPauseKey(k, code, keyCode)) {
+            if (!v.paused) routeAction('remotePause', () => v.pause());
+            return true;
+        }
+
+        if (isPlayKey(k, code, keyCode)) {
+            if (v.paused) routeAction('remotePlay', tryPlay);
+            return true;
+        }
+
+        if (isStopKey(k, code, keyCode)) {
+            requestClose();
+            return true;
+        }
+
+        if (isLeftKey(k, code, keyCode) || isRewindKey(k, code, keyCode)) {
+            routeAction('remoteBack', () => seek(globalTime() - 10));
+            setRemoteFocusByName('back');
+            return true;
+        }
+
+        if (isRightKey(k, code, keyCode) || isForwardKey(k, code, keyCode)) {
+            routeAction('remoteFwd', () => seek(globalTime() + 30));
+            setRemoteFocusByName('fwd');
+            return true;
+        }
+
+        if (isUpKey(k, code, keyCode)) {
+            moveRemoteFocus(-1);
+            return true;
+        }
+
+        if (isDownKey(k, code, keyCode)) {
+            moveRemoteFocus(1);
+            return true;
+        }
+
+        if (isOkKey(k, code, keyCode)) {
+            const target = getRemoteTargets()[remoteFocusIndex] || getRemoteTargets()[0];
+
+            if (target) {
+                routeAction('remoteOk_' + target.name, target.handler);
+            } else {
+                routeAction('remoteToggle', toggle);
+            }
+
+            return true;
+        }
+
+        if (k === 'f' || keyCode === 122) {
+            routeAction('remoteFull', toggleFullscreen);
+            setRemoteFocusByName('full');
+            return true;
+        }
+
+        return false;
+    }
+
+    // Включает режим навигации пультом по элементам управления.
+    function enableRemoteMode() {
+        document.body.classList.add('remote-mode');
+        resetHide();
+        updateRemoteFocus();
+
+        clearTimeout(remoteModeTimer);
+        remoteModeTimer = setTimeout(() => {
+            if (!v.paused) {
+                document.body.classList.remove('remote-mode');
+            }
+        }, 7000);
+    }
+
+    // Возвращает список фокусируемых элементов для пульта.
+    function getRemoteTargets() {
+        if (isIPhoneLandscape()) {
+            return [
+                {el: ipPlay, name: 'play', handler: toggle},
+                {el: ipBack, name: 'back', handler: () => seek(globalTime() - 10)},
+                {el: ipFwd, name: 'fwd', handler: () => seek(globalTime() + 30)},
+                {el: ipFit, name: 'fit', handler: toggleFit},
+                {el: ipFull, name: 'full', handler: toggleFullscreen}
+            ].filter(item => item.el);
+        }
+
+        return [
+            {el: play, name: 'play', handler: toggle},
+            {el: back, name: 'back', handler: () => seek(globalTime() - 10)},
+            {el: fwd, name: 'fwd', handler: () => seek(globalTime() + 30)},
+            {el: fit, name: 'fit', handler: toggleFit},
+            {el: full, name: 'full', handler: toggleFullscreen},
+            {el: prepareBtn, name: 'prepare', handler: togglePrepare},
+            {el: closeBtn, name: 'close', handler: requestClose}
+        ].filter(item => item.el);
+    }
+
+    // Передвигает фокус пульта по панели управления.
+    function moveRemoteFocus(delta) {
+        const targets = getRemoteTargets();
+
+        if (!targets.length) return;
+
+        remoteFocusIndex = (remoteFocusIndex + delta + targets.length) % targets.length;
+        updateRemoteFocus();
+    }
+
+    // Ставит фокус пульта на конкретное действие.
+    function setRemoteFocusByName(name) {
+        const targets = getRemoteTargets();
+        const index = targets.findIndex(item => item.name === name);
+
+        if (index >= 0) {
+            remoteFocusIndex = index;
+            updateRemoteFocus();
+        }
+    }
+
+    // Синхронизирует CSS-класс фокуса с текущим элементом.
+    function updateRemoteFocus() {
+        document.querySelectorAll('.remote-focused').forEach(el => {
+            el.classList.remove('remote-focused');
+        });
+
+        const targets = getRemoteTargets();
+
+        if (!targets.length) return;
+
+        if (remoteFocusIndex < 0 || remoteFocusIndex >= targets.length) {
+            remoteFocusIndex = 0;
+        }
+
+        const target = targets[remoteFocusIndex];
+
+        if (target && target.el) {
+            target.el.classList.add('remote-focused');
+        }
+    }
+    function isOkKey(k, code, keyCode) {
+        return k === 'enter' ||
+            k === 'ok' ||
+            code === 'Enter' ||
+            code === 'NumpadEnter' ||
+            keyCode === 13 ||
+            keyCode === 23 ||
+            keyCode === 66;
+    }
+    function isBackKey(k, code, keyCode) {
+        return k === 'escape' ||
+            k === 'backspace' ||
+            k === 'browserback' ||
+            code === 'Escape' ||
+            code === 'Backspace' ||
+            keyCode === 8 ||
+            keyCode === 27 ||
+            keyCode === 461 ||
+            keyCode === 10009;
+    }
+    function isLeftKey(k, code, keyCode) {
+        return k === 'arrowleft' || code === 'ArrowLeft' || keyCode === 37 || keyCode === 21;
+    }
+    function isRightKey(k, code, keyCode) {
+        return k === 'arrowright' || code === 'ArrowRight' || keyCode === 39 || keyCode === 22;
+    }
+    function isUpKey(k, code, keyCode) {
+        return k === 'arrowup' || code === 'ArrowUp' || keyCode === 38 || keyCode === 19;
+    }
+    function isDownKey(k, code, keyCode) {
+        return k === 'arrowdown' || code === 'ArrowDown' || keyCode === 40 || keyCode === 20;
+    }
+    function isPlayPauseKey(k, code, keyCode) {
+        return k === 'mediaplaypause' ||
+            code === 'MediaPlayPause' ||
+            keyCode === 179 ||
+            keyCode === 10252;
+    }
+    function isPlayKey(k, code, keyCode) {
+        return k === 'mediaplay' ||
+            code === 'MediaPlay' ||
+            keyCode === 415;
+    }
+    function isPauseKey(k, code, keyCode) {
+        return k === 'mediapause' ||
+            code === 'MediaPause' ||
+            keyCode === 19;
+    }
+    function isStopKey(k, code, keyCode) {
+        return k === 'mediastop' ||
+            code === 'MediaStop' ||
+            keyCode === 413;
+    }
+    function isRewindKey(k, code, keyCode) {
+        return k === 'mediarewind' ||
+            code === 'MediaRewind' ||
+            keyCode === 412;
+    }
+    function isForwardKey(k, code, keyCode) {
+        return k === 'mediafastforward' ||
+            code === 'MediaFastForward' ||
+            keyCode === 417;
+    }
+
+    // Открывает страницу очереди подготовки.
+    function openPrepareQueue() {
+        window.open(new URL('prepare_queue.html?t=' + Date.now(), window.location.href).toString(), '_blank');
+    }
+    async function loadPrepareState() {
+        prepareState = {status: 'idle', progress: 0, updated_at: Date.now()};
+        await refreshPrepareState(false);
+    }
+    async function fetchPrepareStatus() {
+        const u = API +
+            '?prepare_status=1' +
+            '&content_id=' + encodeURIComponent(cid) +
+            '&url=' + encodeURIComponent(src || '') +
+            '&t=' + Date.now();
+        const r = await fetch(u, {cache: 'no-store'});
+        const d = await r.json();
+        if (!d || !d.ok) throw new Error((d && d.error) || 'prepare_status failed');
+        return d.item || {status: 'idle', content_id: cid};
+    }
+    async function refreshPrepareState(showErrors) {
+        try {
+            const item = await fetchPrepareStatus();
+            prepareState = normalizePrepareItem(item);
+            renderPrepareButton();
+            return prepareState;
+        } catch (e) {
+            if (showErrors) note('Не удалось получить статус подготовки');
+            renderPrepareButton();
+            return prepareState || {status: 'idle', progress: 0};
+        }
+    }
+
+    // Приводит запись prepare_status/list к единому формату.
+    function normalizePrepareItem(item) {
+        item = item && typeof item === 'object' ? item : {};
+        const status = String(item.status || 'idle');
+        return {
+            status: status,
+            progress: Math.max(0, Math.min(100, Number(item.progress || 0))),
+            title: item.title || titleText,
+            content_id: item.content_id || cid,
+            prepare_key: item.prepare_key || '',
+            hls_url: item.hls_url || '',
+            duration: Number(item.duration || 0),
+            prepared_seconds: Number(item.prepared_seconds || 0),
+            segments: Number(item.segments || 0),
+            running: !!item.running,
+            error: item.error || '',
+            updated_at: Number(item.updated_at || Date.now())
+        };
+    }
+
+    // Отрисовывает кнопку “Скачать/Готовится/Готово” в верхней панели.
+    function renderPrepareButton() {
+        if (!prepareBtn) return;
+
+        const status = prepareState && prepareState.status ? String(prepareState.status) : 'idle';
+        prepareBtn.classList.remove('preparing', 'ready', 'delete');
+        prepareBtn.disabled = false;
+
+        if (status === 'queued') {
+            prepareBtn.classList.add('preparing');
+            prepareBtn.innerText = '⏳ Очередь';
+            prepareBtn.title = 'Видео добавлено в очередь фоновой подготовки. Плеер можно закрыть.';
+            return;
+        }
+
+        if (status === 'processing') {
+            const p = Math.max(0, Math.min(99, Number(prepareState.progress || 0)));
+            prepareBtn.classList.add('preparing');
+            prepareBtn.innerText = '⏳ ' + Math.floor(p) + '%';
+            prepareBtn.title = 'Идёт фоновая подготовка. Плеер можно закрыть.';
+            return;
+        }
+
+        if (status === 'ready') {
+            prepareBtn.classList.add('ready');
+            prepareBtn.innerText = '✓ Готово';
+            prepareBtn.title = 'Видео подготовлено. При запуске будет использоваться готовый HLS. Нажмите, чтобы удалить.';
+            return;
+        }
+
+        if (status === 'error') {
+            prepareBtn.classList.add('delete');
+            prepareBtn.innerText = '⚠ Ошибка';
+            prepareBtn.title = 'Подготовка завершилась ошибкой. Нажмите, чтобы поставить задачу заново.';
+            return;
+        }
+
+        prepareBtn.innerText = '⇩ Скачать';
+        prepareBtn.title = 'Добавить видео в фоновую очередь подготовки';
+    }
+
+    // Периодически обновляет статус подготовки в плеере.
+    function startPrepareUiTicker() {
+        clearInterval(prepareUiTimer);
+        prepareUiTimer = setInterval(async function () {
+            await refreshPrepareState(false);
+        }, 3000);
+    }
+    async function togglePrepare() {
+        await refreshPrepareState(false);
+        const status = prepareState.status || 'idle';
+
+        if (status === 'ready') {
+            try {
+                const u = API + '?prepare_delete=1&content_id=' + encodeURIComponent(cid) + '&t=' + Date.now();
+                const d = await (await fetch(u, {cache: 'no-store'})).json();
+                if (!d.ok) throw new Error(d.error || 'delete failed');
+                prepareState = {status: 'idle', progress: 0, updated_at: Date.now()};
+                renderPrepareButton();
+                note('Подготовленный HLS удалён');
+            } catch (e) {
+                note('Не удалось удалить подготовленный HLS');
+            }
+            return;
+        }
+
+        if (status === 'queued' || status === 'processing') {
+            note('Подготовка уже идёт. Плеер можно закрыть.');
+            renderPrepareButton();
+            return;
+        }
+
+        try {
+            prepareBtn.disabled = true;
+            prepareBtn.innerText = '⏳ Старт...';
+            const u = API +
+                '?prepare_start=1' +
+                '&url=' + encodeURIComponent(src) +
+                '&content_id=' + encodeURIComponent(cid) +
+                '&title=' + encodeURIComponent(titleText) +
+                '&quality=' + encodeURIComponent(activeQuality) +
+                '&t=' + Date.now();
+            const d = await (await fetch(u, {cache: 'no-store'})).json();
+            if (!d.ok) throw new Error(d.error || 'prepare_start failed');
+            prepareState = normalizePrepareItem(d.item || {status: 'queued'});
+            renderPrepareButton();
+            note('Добавлено в очередь. Плеер можно закрыть.');
+        } catch (e) {
+            prepareState = {status: 'error', error: e.message || 'prepare_start failed', progress: 0};
+            renderPrepareButton();
+            note('Не удалось добавить в очередь');
+        }
+    }
+
+    // Для prepared-HLS корректирует duration/offset после загрузки metadata.
+    function installPreparedMetadataFix() {
+        let applied = false;
+
+        const apply = function () {
+            const mediaDuration = (v.duration && isFinite(v.duration) && v.duration > 0) ? Number(v.duration) : 0;
+
+            if (mediaDuration > 0) {
+                preparedMediaDuration = mediaDuration;
+                duration = mediaDuration;
+                preparedSec = mediaDuration;
+                preparedUntil = mediaDuration;
+                prepared.innerText = 'готово / ' + fmt(mediaDuration);
+            }
+
+            if (!applied) {
+                applied = true;
+                let t = Math.max(0, Number(preparedResumePending || 0));
+                const d = mediaDuration || duration || 0;
+
+                if (d > 0) t = Math.min(t, Math.max(0, d - 1));
+
+                if (t > 0) {
+                    try { v.currentTime = t; } catch (e) {}
+                }
+            }
+
+            setTimeout(ui, 80);
+        };
+
+        v.addEventListener('loadedmetadata', apply, { once: false });
+        v.addEventListener('durationchange', apply, { once: false });
+        v.addEventListener('canplay', apply, { once: false });
+        setTimeout(apply, 400);
+        setTimeout(apply, 1400);
+    }
+    async function direct(url, resume) {
+        mode.innerText = 'Direct';
+        mode.className = 'pill ok';
+        hideStatus();
+        v.src = url;
+        v.onloadedmetadata = () => {
+            if (v.duration && isFinite(v.duration)) duration = v.duration;
+            if (resume > 0) v.currentTime = resume;
+            ui();
+        };
+        tryPlay();
+    }
+    async function startHls(start, force) {
+        const requestedStart = Math.max(0, start || 0);
+
+        offset = requestedStart;
+        preparedUntil = offset;
+        preparedSec = 0;
+
+        const readyPrepared = await refreshPrepareState(false);
+        if (readyPrepared && readyPrepared.status === 'ready' && readyPrepared.hls_url) {
+            /*
+             * Важное отличие prepared-HLS от временного HLS/FFmpeg:
+             * prepared-HLS — это полный файл с нулевой временной шкалой.
+             * Поэтому offset должен быть 0, а requestedStart надо применять
+             * только как video.currentTime. Иначе время удваивается:
+             * globalTime = offset + currentTime.
+             */
+            /*
+             * Для prepared-HLS нельзя доверять duration из БД как единственному
+             * источнику. В старых/ручных задачах он мог быть взят из исходного
+             * контейнера или соседнего файла и отличаться от фактической длины
+             * готового HLS. Поэтому сначала берём длительность плейлиста
+             * prepared_seconds, а после loadedmetadata переходим на v.duration.
+             */
+            const playlistDuration = Math.max(0, Number(readyPrepared.prepared_seconds || 0));
+            const dbDuration = Math.max(0, Number(readyPrepared.duration || 0));
+            const initialPreparedDuration = playlistDuration || dbDuration || duration || 0;
+            const resumeAt = initialPreparedDuration > 0
+                ? Math.min(Math.max(0, requestedStart), Math.max(0, initialPreparedDuration - 1))
+                : Math.max(0, requestedStart);
+
+            offset = 0;
+            preparedMediaDuration = 0;
+            preparedResumePending = resumeAt;
+            duration = initialPreparedDuration || 0;
+            preparedSec = initialPreparedDuration || 0;
+            preparedUntil = initialPreparedDuration || 0;
+            preparedPlaybackLoaded = true;
+
+            showStatus('Открываю подготовленный HLS...');
+            mode.innerText = 'Prepared HLS';
+            mode.className = 'pill ok';
+            prepared.innerText = 'готово' + (duration > 0 ? ' / ' + fmt(duration) : '');
+
+            destroyHls();
+            await loadHls(readyPrepared.hls_url + '&t=' + Date.now());
+            installPreparedMetadataFix();
+            hideStatus();
+
+            ui();
+            return;
+        }
+
+        preparedPlaybackLoaded = false;
+        preparedMediaDuration = 0;
+        preparedResumePending = 0;
+        showStatus('FFmpeg стартует с ' + fmt(offset) + '...');
+        mode.innerText = 'HLS/FFmpeg';
+        mode.className = 'pill warn';
+
+        destroyHls();
+
+        const u = API +
+            '?transcode_start=1' +
+            '&url=' + encodeURIComponent(src) +
+            '&content_id=' + encodeURIComponent(cid) +
+            '&sid=' + encodeURIComponent(sid) +
+            '&start=' + encodeURIComponent(String(offset)) +
+            '&quality=' + encodeURIComponent(activeQuality) +
+            '&force=' + (force ? '1' : '0') +
+            '&t=' + Date.now();
+
+        const d = await (await fetch(u)).json();
+
+        if (!d.ok) {
+            showError(d.error || 'Не удалось запустить FFmpeg');
+            return;
+        }
+
+        applyStatus(d);
+
+        clearInterval(timer);
+        timer = setInterval(poll, 1500);
+
+        for (let i = 0; i < 80; i++) {
+            const s = await fetchStatus();
+            applyStatus(s);
+
+            if (s.ready && s.hls_url) {
+                await loadHls(s.hls_url);
+                hideStatus();
+                return;
+            }
+
+            if (!s.running && !s.ready && i > 6) {
+                showError('FFmpeg остановился. Лог: ' + esc(s.last_log || ''));
+                return;
+            }
+
+            showStatus('Подготовка HLS: сегментов ' + (s.segments || 0) + ', готово ' + fmt(s.prepared_seconds || 0));
+            await sleep(1200);
+        }
+
+        showError('HLS слишком долго не готовится');
+    }
+    async function loadHls(url) {
+        destroyHls();
+        hlsMediaRecoveries = 0;
+
+        if (window.Hls && Hls.isSupported()) {
+            hls = new Hls({
+                lowLatencyMode: false,
+                backBufferLength: 30,
+                maxBufferLength: 60,
+                manifestLoadingTimeOut: 20000,
+                fragLoadingTimeOut: 30000
+            });
+
+            hls.loadSource(url);
+            hls.attachMedia(v);
+
+            hls.on(Hls.Events.ERROR, (e, d) => {
+                console.warn('HLS', d);
+                handleHlsError(d);
+            });
+
+            hls.on(Hls.Events.MANIFEST_PARSED, tryPlay);
+        } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
+            v.src = url;
+            tryPlay();
+        } else {
+            showError('HLS не поддерживается, hls.js не загрузился');
+        }
+    }
+    async function handleHlsError(d) {
+        if (!d) return;
+
+        const details = String(d.details || '');
+        const type = String(d.type || '');
+
+        if (type === 'mediaError' && hls && hlsMediaRecoveries < 2) {
+            hlsMediaRecoveries++;
+
+            try {
+                note('Восстанавливаю HLS-буфер...');
+                hls.recoverMediaError();
+                return;
+            } catch (e) {}
+        }
+
+        if (details === 'bufferAppendError' && !hlsSafeFallbackUsed) {
+            hlsSafeFallbackUsed = true;
+            activeQuality = 'safe';
+            quality.innerText = activeQuality;
+
+            showStatus('Плеер не принял поток. Перезапускаю в совместимом H.264/AAC режиме...');
+
+            try {
+                await startHls(Math.max(0, globalTime() - 2), true);
+                return;
+            } catch (e) {
+                console.warn('Safe HLS fallback failed', e);
+            }
+        }
+
+        if (d.fatal) {
+            showError('Ошибка HLS: ' + esc(type) + ' / ' + esc(details));
+        }
+    }
+
+    // Останавливает hls.js и освобождает ресурсы.
+    function destroyHls() {
+        if (hls) {
+            try { hls.destroy(); } catch (e) {}
+            hls = null;
+        }
+
+        try {
+            v.removeAttribute('src');
+            v.load();
+        } catch (e) {}
+    }
+    async function poll() {
+        applyStatus(await fetchStatus());
+    }
+    async function fetchStatus() {
+        try {
+            return await (await fetch(API + '?transcode_status=1&sid=' + encodeURIComponent(sid) + '&t=' + Date.now())).json();
+        } catch (e) {
+            return {ok: false, error: String(e)};
+        }
+    }
+
+    // Применяет статус временной HLS-сессии или prepared-HLS к UI.
+    function applyStatus(s) {
+        if (!s || !s.ok) return;
+
+        if (s.duration > 0) duration = Math.max(duration, +s.duration);
+
+        offset = +(s.offset ?? offset);
+        preparedUntil = +(s.prepared_until ?? preparedUntil);
+        preparedSec = +(s.prepared_seconds ?? preparedSec);
+
+        mode.innerText = s.encoding && s.encoding.name ? s.encoding.name : 'HLS';
+        prepared.innerText = (s.segments || 0) + ' сегм. / ' + fmt(preparedSec || 0);
+
+        if (s.encoding && s.encoding.cpu_level) quality.innerText = activeQuality + ' · CPU ' + s.encoding.cpu_level;
+
+        ui();
+    }
+    async function seek(t) {
+        const d = total();
+
+        t = Math.max(0, t);
+
+        if (d > 0) t = Math.min(d - 1, t);
+
+        if (preparedPlaybackLoaded || (!trans && !needsProxy(src))) {
+            const mediaDuration = preparedPlaybackLoaded && v.duration && isFinite(v.duration) && v.duration > 0 ? Number(v.duration) : d;
+            if (mediaDuration > 0) t = Math.min(Math.max(0, t), Math.max(0, mediaDuration - 0.25));
+            try { v.currentTime = t; } catch (e) {}
+            setTimeout(ui, 80);
+            return;
+        }
+
+        const local = t - offset;
+
+        if (local >= 0 && local <= Math.max(0, preparedSec - 8)) {
+            v.currentTime = local;
+            return;
+        }
+
+        save(false);
+        note('Перемотка: ' + fmt(t));
+        await startHls(t, true);
+    }
+
+    // Обновляет время, прогресс, буфер и кнопки на экране.
+    function ui() {
+        const g = globalTime();
+        const d = total();
+
+        if (d > 0) {
+            const p = Math.min(100, Math.max(0, g / d * 100));
+            bar.style.width = p + '%';
+            knob.style.left = p + '%';
+            buf.style.width = Math.min(100, Math.max(0, preparedUntil / d * 100)) + '%';
+            time.innerText = fmt(g) + ' / ' + fmt(d);
+            if (iphoneReadout) iphoneReadout.innerText = fmt(g) + ' / ' + fmt(d);
+            if (iphoneBar) iphoneBar.style.width = p + '%';
+            if (iphoneBuf) iphoneBuf.style.width = Math.min(100, Math.max(0, preparedUntil / d * 100)) + '%';
+        } else {
+            time.innerText = fmt(g) + ' / --:--';
+            if (iphoneReadout) iphoneReadout.innerText = fmt(g) + ' / --:--';
+            if (iphoneBar) iphoneBar.style.width = '0%';
+            if (iphoneBuf) iphoneBuf.style.width = '0%';
+        }
+    }
+
+    // Возвращает позицию просмотра в глобальном времени фильма.
+    function globalTime() {
+        return (preparedPlaybackLoaded ? 0 : offset) + (v.currentTime || 0);
+    }
+
+    // Возвращает общую длительность фильма/серии.
+    function total() {
+        if (preparedPlaybackLoaded) {
+            if (v.duration && isFinite(v.duration) && v.duration > 0) return Number(v.duration);
+            if (preparedMediaDuration > 0) return preparedMediaDuration;
+            if (duration > 0) return duration;
+            return 0;
+        }
+
+        if (duration > 0) return duration;
+
+        if (v.duration && isFinite(v.duration)) {
+            return trans ? offset + v.duration : v.duration;
+        }
+
+        return 0;
+    }
+
+    // Сохраняет прогресс просмотра на сервер и отправляет его в Lampa.
+    function save(ended, beacon = false) {
+        const d = total();
+        const pos = globalTime();
+
+        if (!d || !isFinite(d)) return;
+
+        const sec = Math.floor(pos);
+
+        if (!ended && sec === lastSaved && !beacon) return;
+
+        lastSaved = sec;
+
+        const payload = {
+            content_id: cid,
+            title: titleText,
+            url: src,
+            position: pos,
+            duration: d,
+            percent: d ? Math.round(pos / d * 100) : 0,
+            ended: !!(ended || v.ended),
+            device_id: deviceId(),
+            updated_at: Date.now()
+        };
+
+        notifyLampaProgress(payload);
+
+        if (beacon && navigator.sendBeacon) {
+            navigator.sendBeacon(API, new Blob([JSON.stringify(payload)], {type: 'application/json'}));
+            return;
+        }
+
+        fetch(API, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        }).catch(() => {});
+    }
+
+    // Передаёт прогресс в родительский плагин Lampa через postMessage.
+    function notifyLampaProgress(payload) {
+        try {
+            window.parent.postMessage({
+                type: 'lampa-sync-progress',
+                payload: payload
+            }, '*');
+        } catch (e) {}
+    }
+
+    // Корректно останавливает HLS и сообщает серверу о закрытии временной сессии.
+    function shutdown() {
+        if (stopped) return;
+
+        stopped = true;
+        save(false, true);
+        clearInterval(timer);
+        clearInterval(prepareUiTimer);
+
+        if (trans || needsProxy(src)) {
+            const u = API + '?transcode_stop=1&sid=' + encodeURIComponent(sid) + '&delete=1';
+
+            if (navigator.sendBeacon) {
+                navigator.sendBeacon(u, new Blob(['{}'], {type: 'application/json'}));
+            } else {
+                fetch(u, {method: 'POST', keepalive: true}).catch(() => {});
+            }
+        }
+    }
+
+    // Просит родительское окно закрыть iframe-плеер.
+    function requestClose() {
+        shutdown();
+
+        try {
+            window.parent.postMessage({type: 'lampa-sync-request-close'}, '*');
+        } catch (e) {}
+
+        setTimeout(() => {
+            if (window.parent === window) history.back();
+        }, 150);
+    }
+
+    // Переключает play/pause.
+    function toggle() {
+        v.paused ? tryPlay() : v.pause();
+    }
+    async function tryPlay() {
+        try { await v.play(); } catch (e) {}
+        state();
+    }
+
+    // Обновляет состояние центральной кнопки play/pause.
+    function state() {
+        const icon = v.paused ? '▶' : 'Ⅱ';
+        play.innerText = icon;
+        center.innerText = icon;
+        if (ipPlay) ipPlay.innerText = icon;
+    }
+
+    // Переключает fullscreen.
+    function toggleFullscreen() {
+        if (document.fullscreenElement) {
+            document.exitFullscreen().catch(() => {});
+        } else if (document.documentElement.requestFullscreen) {
+            document.documentElement.requestFullscreen().catch(() => {});
+        }
+    }
+
+    // Переключает режим вписывания/заполнения видео.
+    function toggleFit() {
+        fitMode = fitMode === 'contain' ? 'cover' : 'contain';
+        v.style.objectFit = fitMode;
+        note(fitMode === 'cover' ? 'Заполнение экрана' : 'По размеру экрана');
+    }
+
+    // Сбрасывает таймер скрытия интерфейса плеера.
+    function resetHide() {
+        document.body.classList.remove('clean');
+
+        clearTimeout(hideTimer);
+
+        hideTimer = setTimeout(() => {
+            if (!v.paused && err.style.display !== 'block') {
+                document.body.classList.add('clean');
+            }
+        }, 3500);
+    }
+
+    // Показывает временный статус по центру экрана.
+    function showStatus(t) {
+        statusBox.classList.remove('hide');
+        statusText.innerText = t;
+    }
+
+    // Скрывает центральный статус.
+    function hideStatus() {
+        statusBox.classList.add('hide');
+    }
+
+    // Показывает ошибку воспроизведения.
+    function showError(m) {
+        err.style.display = 'block';
+        err.innerHTML = m;
+        document.body.classList.remove('clean');
+    }
+
+    // Показывает короткий toast.
+    function note(m) {
+        toast.innerText = m;
+        toast.style.display = 'block';
+        clearTimeout(note.t);
+        note.t = setTimeout(() => toast.style.display = 'none', 1700);
+    }
+
+    // Решает, нужно ли проксировать исходный HTTP-поток через HTTPS API.
+    function needsProxy(u) {
+        return u.startsWith('http://') || u.includes(':8090') || u.includes('/stream/');
+    }
+    async function loadProgress() {
+        try {
+            const r = await fetch(API + '?content_id=' + encodeURIComponent(cid) + '&t=' + Date.now());
+            return r.ok ? await r.json() : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // Нормализует прогресс из query/API.
+    function normProg(p) {
+        if (!p) return null;
+
+        let position = +(p.position || 0);
+        const totalDuration = +(p.duration || 0);
+
+        // Защита от старых битых сохранений вида 40:00 / 25:00.
+        if (totalDuration > 0 && position > totalDuration + 30) {
+            position = 0;
+        }
+
+        return {
+            position: position,
+            duration: totalDuration,
+            percent: +(p.percent || 0),
+            ended: p.ended === true || p.ended === 1 || p.ended === '1'
+        };
+    }
+
+    // Создаёт id устройства для записи прогресса.
+    function deviceId() {
+        let id = localStorage.getItem('lampa_sync_device_id');
+
+        if (!id) {
+            id = 'dev_' + Math.random().toString(36).slice(2) + '_' + Date.now();
+            localStorage.setItem('lampa_sync_device_id', id);
+        }
+
+        return id;
+    }
+
+    // Простой hash для идентификаторов плеера.
+    function hash(s) {
+        let h = 0;
+
+        if (!s) return 'empty';
+
+        for (let i = 0; i < s.length; i++) {
+            h = ((h << 5) - h) + s.charCodeAt(i);
+            h |= 0;
+        }
+
+        return 'c_' + Math.abs(h);
+    }
+
+    // Форматирует секунды в HH:MM:SS или MM:SS.
+    function fmt(x) {
+        x = Math.max(0, Math.floor(x || 0));
+
+        const h = Math.floor(x / 3600);
+        const m = Math.floor((x % 3600) / 60);
+        const s = x % 60;
+
+        return h > 0
+            ? h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0')
+            : m + ':' + String(s).padStart(2, '0');
+    }
+
+    // Экранирует строку для безопасного вывода в HTML.
+    function esc(s) {
+        return String(s)
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;');
+    }
+
+    // Promise-задержка для коротких асинхронных пауз.
+    function sleep(ms) {
+        return new Promise(r => setTimeout(r, ms));
+    }
+</script>
+</body>
+</html>

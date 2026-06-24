@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Lampa Sync Queue</title>
+  <style>
+    :root{--bg:#09090b;--panel:rgba(255,255,255,.075);--line:rgba(255,255,255,.14);--muted:rgba(255,255,255,.62);--ok:#8ff0b0;--warn:#ffe08a;--bad:#ff9c9c;--accent:#7c5cff;--blue:#22d3ee}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,rgba(124,92,255,.25),transparent 34%),var(--bg);color:#fff;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;padding:18px}header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}h1{font-size:22px;margin:0}.toolbar{display:flex;gap:8px;flex-wrap:wrap}.btn{border:1px solid var(--line);background:rgba(0,0,0,.35);color:#fff;border-radius:14px;padding:10px 14px;cursor:pointer;text-decoration:none}.btn:hover{background:rgba(255,255,255,.08)}.btn.bad{border-color:rgba(255,156,156,.35);color:var(--bad)}.btn.ok{border-color:rgba(143,240,176,.35);color:var(--ok)}.btn.warn{border-color:rgba(255,224,138,.35);color:var(--warn)}.panel{border:1px solid var(--line);background:var(--panel);border-radius:18px;padding:14px;margin-bottom:14px}.add{display:grid;grid-template-columns:1fr auto;gap:10px}input,select{width:100%;border:1px solid var(--line);background:rgba(0,0,0,.35);color:#fff;border-radius:14px;padding:12px 13px;font:inherit}select{max-width:160px}.hint{color:var(--muted);font-size:12px;margin-top:8px;line-height:1.45}.list{display:grid;gap:12px}.item{border:1px solid var(--line);background:var(--panel);border-radius:18px;padding:14px}.top{display:flex;gap:12px;align-items:flex-start;justify-content:space-between}.title{font-weight:800;line-height:1.25;overflow:hidden;text-overflow:ellipsis}.meta{margin-top:7px;color:var(--muted);font-size:13px;display:flex;gap:8px;flex-wrap:wrap}.pill{border:1px solid var(--line);border-radius:999px;padding:3px 8px}.queued,.processing,.retry{color:var(--warn)}.ready{color:var(--ok)}.error,.stalled{color:var(--bad)}.bar{margin-top:12px;height:8px;background:rgba(255,255,255,.14);border-radius:99px;overflow:hidden}.fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--blue))}pre{white-space:pre-wrap;max-height:140px;overflow:auto;color:#ddd;background:rgba(0,0,0,.25);border-radius:12px;padding:10px;font-size:12px}.empty{color:var(--muted);text-align:center;padding:30px}.actions{display:flex;gap:8px;flex-wrap:wrap}.small{font-size:12px;color:var(--muted);margin-top:8px;overflow-wrap:anywhere}.msg{margin-top:10px;color:var(--muted);font-size:13px}.msg.ok{color:var(--ok)}.msg.bad{color:var(--bad)}@media(max-width:720px){body{padding:12px}header{display:block}.toolbar{margin-top:12px}.top{display:block}.actions{margin-top:12px}.btn,.add button{width:100%}.add{grid-template-columns:1fr}select{max-width:none}}
+  </style>
+</head>
+<body>
+<header>
+  <h1>Очередь подготовки</h1>
+  <div class="toolbar">
+    <button class="btn" id="refresh">Обновить</button>
+    <button class="btn warn" id="kick">Пнуть worker</button>
+    <button class="btn bad" id="resetStalled">Сбросить зависшие</button>
+  </div>
+</header>
+
+<div class="panel">
+  <div class="add">
+    <input id="url" placeholder="Вставь ссылку на видео из Lampa / TorrServer / player.html?url=...">
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <select id="quality" title="Качество подготовки">
+        <option value="fast">fast</option>
+        <option value="lowcpu">lowcpu</option>
+        <option value="balanced">balanced</option>
+        <option value="safe">safe</option>
+      </select>
+      <button class="btn ok" id="addBtn">Добавить</button>
+    </div>
+  </div>
+  <div class="hint">Можно вставить прямую ссылку на поток TorrServer или ссылку на наш player.html. Задача попадёт в очередь, worker сам запустится в фоне.</div>
+  <div id="msg" class="msg"></div>
+</div>
+
+<div id="list" class="list"><div class="empty">Загрузка...</div></div>
+
+<!-- Логика страницы очереди: добавление ссылок, список задач, retry/delete и запуск worker-а. -->
+<script>
+const API = new URL('api.php', window.location.href).toString();
+const list=document.getElementById('list');
+const msg=document.getElementById('msg');
+document.getElementById('refresh').onclick=load;
+document.getElementById('kick').onclick=kick;
+document.getElementById('resetStalled').onclick=resetStalled;
+document.getElementById('addBtn').onclick=add;
+// Форматирует секунды в человекочитаемое время.
+function fmt(s){s=Number(s||0);const h=Math.floor(s/3600),m=Math.floor(s%3600/60),sec=Math.floor(s%60);return h?`${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`:`${m}:${String(sec).padStart(2,'0')}`}
+function segText(it){const cur=Number(it.segments||0),total=Number(it.total_segments||0);return total>0?`${cur} / ~${total} сегм.`:`${cur} сегм.`}
+function timeText(it){const prep=Number(it.prepared_seconds||0),dur=Number(it.duration||0);return dur>0?`${fmt(prep)} / ${fmt(dur)}`:`${fmt(prep)} / определяем`}
+// Экранирует строку перед вставкой в HTML.
+function esc(x){return String(x||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
+// Переводит внутренний статус задачи в русский текст.
+function statusText(s){return {queued:'В очереди',processing:'Готовится',retry:'Повтор',ready:'Готово',error:'Ошибка',idle:'Нет'}[s]||s}
+function show(text,cls=''){msg.className='msg '+cls;msg.textContent=text||''}
+// Собирает URL до api.php относительно текущей страницы очереди.
+async function api(url){const r=await fetch(url,{cache:'no-store'});return await r.json()}
+// Добавляет новую ссылку в очередь подготовки.
+async function add(){
+  const input=document.getElementById('url');
+  const url=input.value.trim();
+  const quality=document.getElementById('quality').value;
+  if(!url){show('Вставь ссылку.', 'bad');return}
+  show('Добавляю...');
+  try{
+    const d=await api(API+'?prepare_start=1&url='+encodeURIComponent(url)+'&quality='+encodeURIComponent(quality)+'&t='+Date.now());
+    if(!d.ok){show(d.error||'Не удалось добавить.', 'bad');return}
+    input.value='';
+    show(d.already_exists?'Уже есть в очереди.':'Добавлено в очередь.', 'ok');
+    load();
+  }catch(e){show('Ошибка добавления: '+e.message, 'bad')}
+}
+// Запускает или “пинает” worker через API.
+async function kick(){show('Запускаю worker...');try{const d=await api(API+'?prepare_kick=1&t='+Date.now());show(d.ok?'Worker запущен / уже проверяется.':'Не удалось запустить worker.', d.ok?'ok':'bad');load()}catch(e){show('Ошибка: '+e.message,'bad')}}
+// Сбрасывает зависшие задачи в retry.
+async function resetStalled(){if(!confirm('Сбросить зависшие задачи и перезапустить worker?'))return;show('Проверяю зависшие...');try{const d=await api(API+'?prepare_reset_stalled=1&t='+Date.now());show('Сброшено зависших: '+((d.changed||[]).length), 'ok');load()}catch(e){show('Ошибка: '+e.message,'bad')}}
+async function del(id){if(!confirm('Удалить подготовку?'))return;await api(API+'?prepare_delete=1&content_id='+encodeURIComponent(id)+'&t='+Date.now());load()}
+async function retry(id){await api(API+'?prepare_retry=1&content_id='+encodeURIComponent(id)+'&t='+Date.now());load()}
+function retryInfo(it){
+  if(it.status!=='retry'||!it.next_retry_at)return '';
+  const sec=Math.max(0,Math.round((Number(it.next_retry_at)-Date.now())/1000));
+  if(sec<=0)return 'скоро';
+  const m=Math.floor(sec/60),s=sec%60;
+  return `через ${m}:${String(s).padStart(2,'0')}`;
+}
+// Загружает prepare_list и обновляет страницу.
+async function load(){
+  try{
+    const d=await api(API+'?prepare_list=1&limit=100&t='+Date.now());
+    if(!d.ok){list.innerHTML='<div class="empty">API вернул ошибку: '+esc(d.error||'unknown')+'</div>';return}
+    if(!Array.isArray(d.items)){list.innerHTML='<div class="empty">API не вернул список items. Проверь: api.php?prepare_inspect=1</div>';return}
+    const items=d.items;
+    if(!items.length){list.innerHTML='<div class="empty">Очередь пустая'+(typeof d.total==='number'?` · записей в БД: ${d.total}`:'')+(d.db_file?`<br><span class=small>DB: ${esc(d.db_file)} · size: ${Number(d.db_size||0)} байт</span>`:'')+'</div>';return}
+    list.innerHTML=items.map(it=>{
+      const p=Math.max(0,Math.min(100,Number(it.progress||0)));
+      const st=esc(it.status||'idle');
+      const cls=it.stalled?'stalled':st;
+      const rInfo=retryInfo(it);
+      const attempt=`${Number(it.attempts||0)}/${Number(it.max_attempts||3)}`;
+      const actions=[];
+      if(st==='error'||st==='retry') actions.push(`<button class="btn ok" onclick="retry('${esc(it.content_id)}')">Повторить</button>`);
+      actions.push(`<button class="btn bad" onclick="del('${esc(it.content_id)}')">Удалить</button>`);
+      return `<div class="item">
+        <div class="top"><div><div class="title">${esc(it.title||it.content_id)}</div><div class="meta"><span class="pill ${cls}">${it.stalled?'Зависло':statusText(st)}</span><span class="pill">${Math.floor(p)}%</span><span class="pill">${esc(it.quality||'fast')}</span><span class="pill">${esc(segText(it))}</span><span class="pill">${esc(timeText(it))}</span><span class="pill">попытка ${attempt}</span>${rInfo?`<span class="pill retry">повтор ${esc(rInfo)}</span>`:''}</div></div><div class="actions">${actions.join('')}</div></div>
+        <div class="bar"><div class="fill" style="width:${p}%"></div></div>
+        ${it.error?`<pre>${esc(it.error)}</pre>`:''}
+        <div class="small">content_id: ${esc(it.content_id)} · worker_pid: ${Number(it.worker_pid||0)} · ffmpeg_pid: ${Number(it.pid||0)}${it.duration_source?` · duration: ${esc(it.duration_source)}`:''}</div>
+      </div>`
+    }).join('')
+  }catch(e){list.innerHTML='<div class="empty">Не удалось загрузить очередь</div>'}
+}
+load();setInterval(load,5000);
+</script>
+</body>
+</html>
