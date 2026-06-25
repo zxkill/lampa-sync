@@ -984,6 +984,10 @@
     const trans = qs.get('transcode') === '1' || qs.get('hls') === '1';
     const q = qs.get('quality') || 'fast';
     let activeQuality = q;
+
+    // Субтитры временно отключены: UI и загрузка WebVTT не запускаются.
+    // Логика оставлена в файле, чтобы позже можно было вернуться без отката больших блоков.
+    const SUBTITLES_ENABLED = false;
     const audioPrefKey = 'lampa_sync_audio_track_' + hash(src || baseCid);
     const explicitAudioTrack = qs.has('audio_track') || localStorage.getItem(audioPrefKey) !== null;
     let activeAudioTrack = Math.max(0, parseInt(qs.get('audio_track') || localStorage.getItem(audioPrefKey) || '0', 10) || 0);
@@ -1874,6 +1878,14 @@
     // Рисует выпадающий список субтитров. Первый пункт всегда выключает субтитры.
     function renderSubtitleTrackSelect() {
         if (!subtitleSelect) return;
+        if (!SUBTITLES_ENABLED) {
+            activeSubtitleTrack = -1;
+            subtitleTracks = [];
+            try { subtitleSelect.value = '-1'; } catch (e) {}
+            subtitleSelect.classList.add('hide');
+            clearSubtitleTrack();
+            return;
+        }
 
         subtitleSelect.innerHTML = '';
 
@@ -1917,6 +1929,7 @@
     async function applySubtitleTrack() {
         clearSubtitleTrack();
 
+        if (!SUBTITLES_ENABLED) return;
         if (activeSubtitleTrack < 0 || !src) return;
 
         const token = ++subtitleLoadToken;
@@ -2145,6 +2158,10 @@
     // При смене субтитров видео не пересобирается: меняется только подключённый WebVTT.
     function bindSubtitleTrackSelect() {
         if (!subtitleSelect) return;
+        if (!SUBTITLES_ENABLED) {
+            subtitleSelect.classList.add('hide');
+            return;
+        }
         subtitleSelect.addEventListener('change', async e => {
             const next = parseInt(e.target.value || '-1', 10);
             activeSubtitleTrack = isFinite(next) ? next : -1;
