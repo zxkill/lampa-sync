@@ -34,6 +34,13 @@
 
 
   // Настройки синхронизации состояния Lampa через progress.php.
+  /*
+   * Activity is allowed to navigate the UI only as a remote command:
+   * - origin_device must be another device;
+   * - server updated_at must be newer than local meta;
+   * - each remote activity token is applied once;
+   * - local rewrites caused by Activity.replace are suppressed for a few seconds.
+   */
   const ACTIVITY_RUNTIME_APPLY = true;
   const ACTIVITY_LOCAL_GUARD_MS = 5000;
   const ACTIVITY_APPLY_COOLDOWN_MS = 2500;
@@ -42,7 +49,13 @@
   const ACTIVITY_STARTUP_REPULL_1_MS = 1200;
   const ACTIVITY_STARTUP_REPULL_2_MS = 3500;
 
-  const STORAGE_SYNC_SERVER_PROFILE_ID = '0';
+  /*
+   * Cross-device sync should not depend on unstable Lampa profile detection.
+   * We still update profile-specific localStorage keys, but store the server bundle
+   * under a stable per-account profile scope. For multi-profile usage this can be
+   * changed to '' and then ids.profileId will be used below.
+   */
+  const STORAGE_SYNC_SERVER_PROFILE_ID = '0'; // user-level scope; set '' for separate Lampa profiles
 
   const LOCAL_POLL_MS = 900;
   const SERVER_META_POLL_MS = 2500;
@@ -50,6 +63,14 @@
   const WAIT_IDS_MS = 15000;
   const WAIT_STEP_MS = 500;
 
+  /*
+   * Only keys needed for the current task:
+   * - file_view / file_view_<profile>  -> watch progress
+   * - online_watched_last/list         -> watch history
+   * - activity                         -> active page / app state
+   *
+   * Do not sync plugins/settings/menu/favorites here.
+   */
   const BASE_SYNC_KEYS = [
     'activity',
     'favorite',
@@ -138,6 +159,15 @@
         return originalPlay.apply(this, arguments);
       }
 
+      /*
+       * The playback URL/content_id can change when prepared-HLS is matched,
+       * but resume progress must stay tied to the original Lampa item id.
+       * Older working versions used one stable cid for read/save/start; losing
+       * that identity is what makes the SQLite progress row look "missing".
+       */
+      const originalStreamUrl = streamUrl;
+      const progressContentId = getContentId(data, originalStreamUrl);
+
       const preparedItemFromPlayer = findPreparedFastItem(streamUrl);
       if (preparedItemFromPlayer && (preparedItemFromPlayer.source_url || preparedItemFromPlayer.normalized_url)) {
         console.log('[Lampa Sync] prepared cache matched in Player.play:', preparedItemFromPlayer);
@@ -145,22 +175,27 @@
       }
 
       const title = preparedItemFromPlayer && preparedItemFromPlayer.title ? preparedItemFromPlayer.title : getTitle(data);
-      const contentId = preparedItemFromPlayer && preparedItemFromPlayer.content_id ? preparedItemFromPlayer.content_id : getContentId(data, streamUrl);
+      const contentId = preparedItemFromPlayer && preparedItemFromPlayer.content_id ? preparedItemFromPlayer.content_id : progressContentId;
 
       currentPlayback = {
         data: data || {},
         streamUrl: streamUrl,
         title: title,
-        contentId: contentId,
+        contentId: progressContentId,
+        mediaContentId: contentId,
         openedAt: Date.now(),
         preparedItem: preparedItemFromPlayer || null
       };
+
+      const progressAltIds = buildProgressAltIds(progressContentId, originalStreamUrl, streamUrl, preparedItemFromPlayer);
 
       const playerUrl =
         PLAYER_URL +
         '?url=' + encodeURIComponent(streamUrl) +
         '&title=' + encodeURIComponent(title) +
         '&content_id=' + encodeURIComponent(contentId) +
+        '&progress_content_id=' + encodeURIComponent(progressContentId) +
+        '&progress_alt_ids=' + encodeURIComponent(progressAltIds.join(',')) +
         '&transcode=1' +
         '&quality=' + encodeURIComponent(QUALITY) +
         '&v=' + Date.now();
@@ -173,7 +208,7 @@
     bindEvents();
     startStorageSyncWhenReady();
 
-    console.log('[Lampa Sync] enabled: iframe overlay + HLS/FFmpeg + clean localStorage sync v8.10-action-menu-title-fix');
+    console.log('[Lampa Sync] enabled: iframe overlay + HLS/FFmpeg + clean localStorage sync v8.11-progress-stream-id-fix');
   }
 
   // Открывает наш player.html поверх интерфейса Lampa в iframe.
@@ -892,13 +927,16 @@
     if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
 
     const title = item.title || getDomTitle(target) || 'Видео';
-    const contentId = item.content_id || ('stream_' + simpleHash(item.normalized_url || streamUrl));
+    const progressContentId = getContentId({}, streamUrl);
+    const contentId = item.content_id || progressContentId || ('stream_' + simpleHash(item.normalized_url || streamUrl));
+    const progressAltIds = buildProgressAltIds(progressContentId, streamUrl, streamUrl, item);
 
     currentPlayback = {
       data: {},
       streamUrl: streamUrl,
       title: title,
-      contentId: contentId,
+      contentId: progressContentId || contentId,
+      mediaContentId: contentId,
       openedAt: Date.now(),
       preparedFastOpen: true
     };
@@ -908,6 +946,8 @@
       '?url=' + encodeURIComponent(streamUrl) +
       '&title=' + encodeURIComponent(title) +
       '&content_id=' + encodeURIComponent(contentId) +
+      '&progress_content_id=' + encodeURIComponent(progressContentId || contentId) +
+      '&progress_alt_ids=' + encodeURIComponent(progressAltIds.join(',')) +
       '&transcode=1' +
       '&prepared=1' +
       '&quality=' + encodeURIComponent(QUALITY) +
@@ -3034,7 +3074,19 @@
 
   // Создаёт стабильный content_id для плеера и прогресса.
   function getContentId(data, streamUrl) {
-    if (data?.content_id) return data.content_id;
+    /*
+     * Главное правило: прогресс привязываем к конкретному stream-файлу,
+     * а не к generic data.content_id из Lampa. В некоторых экранах Lampa этот
+     * id может быть одинаковым для разных фильмов/вариантов, из-за чего все
+     * фильмы стартуют с одной старой позиции и новые записи отклоняются.
+     */
+    const preparedItem = findPreparedFastItem(streamUrl);
+    const identityUrl = preparedItem && (preparedItem.source_url || preparedItem.normalized_url)
+      ? (preparedItem.source_url || preparedItem.normalized_url)
+      : streamUrl;
+
+    const byStream = makeProgressContentIdFromStream(identityUrl);
+    if (byStream) return byStream;
 
     const season = getSeasonNumber(data);
     const episode = getEpisodeNumber(data);
@@ -3045,6 +3097,73 @@
 
     return 'url_' + simpleHash(streamUrl || JSON.stringify(data || {}));
   }
+
+  function makeProgressContentIdFromStream(streamUrl) {
+    if (!streamUrl) return '';
+
+    let raw = String(streamUrl || '');
+    for (let i = 0; i < 2; i++) {
+      try {
+        const decoded = decodeURIComponent(raw);
+        if (decoded === raw) break;
+        raw = decoded;
+      } catch (e) {
+        break;
+      }
+    }
+
+    try {
+      const nested = new URL(raw, location.href).searchParams.get('url');
+      if (nested && nested !== raw) {
+        const nestedId = makeProgressContentIdFromStream(nested);
+        if (nestedId) return nestedId;
+      }
+    } catch (e) {}
+
+    const torrentKey = torrentKeyFromUrl(raw);
+    const pathKey = normalizeStreamPathForMatch(raw);
+
+    if (torrentKey || pathKey) {
+      return 'stream_' + simpleHash((torrentKey || '') + '|' + (pathKey || ''));
+    }
+
+    try {
+      const u = new URL(raw, location.href);
+      const stable = [
+        u.pathname || '',
+        u.searchParams.get('link') || '',
+        u.searchParams.get('index') || u.searchParams.get('id') || ''
+      ].join('|');
+
+      if (stable.replace(/\|/g, '') !== '') {
+        return 'stream_' + simpleHash(stable);
+      }
+    } catch (e) {}
+
+    return raw ? 'url_' + simpleHash(raw) : '';
+  }
+
+  function buildProgressAltIds(primary, originalUrl, playbackUrl, preparedItem) {
+    const ids = [primary];
+
+    [originalUrl, playbackUrl].forEach(function (url) {
+      const id = makeProgressContentIdFromStream(url);
+      if (id) ids.push(id);
+    });
+
+    if (preparedItem) {
+      [preparedItem.source_url, preparedItem.normalized_url, preparedItem.hls_url].forEach(function (url) {
+        const id = makeProgressContentIdFromStream(url);
+        if (id) ids.push(id);
+      });
+
+      // prepared task id is a useful fallback, but it must never become the main progress id.
+      if (preparedItem.content_id) ids.push(String(preparedItem.content_id));
+    }
+
+    return unique(ids);
+  }
+
   function getSeasonNumber(data) {
     return firstDigits(
       data?.season || data?.season_number || data?.season_num || data?.episode?.season ||

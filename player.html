@@ -127,6 +127,24 @@
             white-space: nowrap;
         }
 
+        .audio-select {
+            max-width: min(260px, 42vw);
+            height: 29px;
+            padding: 3px 28px 3px 9px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: rgba(0, 0, 0, .38);
+            color: #fff;
+            font: inherit;
+            font-size: 12px;
+            outline: none;
+        }
+
+        .audio-select option {
+            background: #151518;
+            color: #fff;
+        }
+
         .ok {
             color: #baffd5;
             border-color: rgba(37, 211, 102, .45);
@@ -382,6 +400,40 @@
             backdrop-filter: blur(14px);
             font-size: 13px;
             pointer-events: none;
+        }
+
+        /*
+         * Собственный слой субтитров.
+         * Нативный <track> в браузерах и WebView ведёт себя нестабильно:
+         * дорожка может загрузиться, но не отрисоваться поверх HLS/MSE.
+         * Поэтому WebVTT дополнительно парсится в JS и выводится отдельным overlay.
+         */
+        #subtitleOverlay {
+            position: absolute;
+            z-index: 56;
+            left: max(18px, env(safe-area-inset-left));
+            right: max(18px, env(safe-area-inset-right));
+            bottom: calc(max(10px, env(safe-area-inset-bottom)) + 112px);
+            display: none;
+            text-align: center;
+            white-space: pre-line;
+            pointer-events: none;
+            color: #fff;
+            font-size: clamp(18px, 3.2vw, 34px);
+            font-weight: 700;
+            line-height: 1.25;
+            background: rgba(0, 0, 0, .38);
+            border-radius: 14px;
+            padding: 6px 12px;
+            text-shadow:
+                0 2px 4px #000,
+                0 -2px 4px #000,
+                2px 0 4px #000,
+                -2px 0 4px #000;
+        }
+
+        body.clean #subtitleOverlay {
+            bottom: max(28px, env(safe-area-inset-bottom));
         }
 
         body.clean #shade,
@@ -828,6 +880,7 @@
 <div id="app">
     <video id="video" playsinline webkit-playsinline preload="auto"></video>
     <div id="shade"></div>
+    <div id="subtitleOverlay"></div>
 
     <div id="top">
         <button id="close" class="btn" type="button" aria-label="Закрыть">✕</button>
@@ -836,6 +889,12 @@
             <div id="meta">
                 <span id="mode" class="pill warn">Подготовка</span>
                 <span id="quality" class="pill">fast</span>
+                <select id="audioTrack" class="audio-select hide" title="Звуковая дорожка" aria-label="Звуковая дорожка">
+                    <option value="0">Аудио: авто</option>
+                </select>
+                <select id="subtitleTrack" class="audio-select hide" title="Субтитры" aria-label="Субтитры">
+                    <option value="-1">Субтитры: выкл.</option>
+                </select>
                 <span id="prepared" class="pill">0 сегм.</span>
             </div>
         </div>
@@ -897,16 +956,59 @@
     const qs = new URLSearchParams(location.search);
     const src = qs.get('url');
     const titleText = qs.get('title') || 'Видео';
-    const cid = qs.get('content_id') || hash(src || titleText);
+
+    /*
+     * Важное разделение идентификаторов:
+     * - mediaCid: конкретный вариант запуска (prepared-HLS, аудиодорожка и т.п.);
+     * - progressCid: стабильный ключ прогресса именно этого фильма/серии.
+     *
+     * Если сохранять прогресс под generic id из Lampa или под id prepared-задачи,
+     * разные фильмы могут читать одну и ту же старую позицию, а новые записи будут
+     * отбрасываться как “откат назад”. Поэтому read/write всегда идут по baseCid.
+     */
+    const mediaCid = qs.get('content_id') || hash(src || titleText);
+    const progressCid = qs.get('progress_content_id') || mediaCid;
+    const cid = mediaCid;
+    const baseCid = String(progressCid || mediaCid).replace(/_a\d+$/, '');
+    const progressAltIds = (qs.get('progress_alt_ids') || '')
+        .split(',')
+        .map(v => String(v || '').trim())
+        .filter(Boolean);
+    const progressIds = uniqueProgressIds([
+        baseCid,
+        progressCid,
+        String(progressCid || '').replace(/_a\d+$/, ''),
+        mediaCid,
+        String(mediaCid || '').replace(/_a\d+$/, '')
+    ].concat(progressAltIds));
     const trans = qs.get('transcode') === '1' || qs.get('hls') === '1';
     const q = qs.get('quality') || 'fast';
     let activeQuality = q;
+    const audioPrefKey = 'lampa_sync_audio_track_' + hash(src || baseCid);
+    const explicitAudioTrack = qs.has('audio_track') || localStorage.getItem(audioPrefKey) !== null;
+    let activeAudioTrack = Math.max(0, parseInt(qs.get('audio_track') || localStorage.getItem(audioPrefKey) || '0', 10) || 0);
+    let audioTracks = [];
+    let audioTracksLoaded = false;
+
+    const subtitlePrefKey = 'lampa_sync_subtitle_track_' + hash(src || baseCid);
+    const explicitSubtitleTrack = qs.has('subtitle_track') || localStorage.getItem(subtitlePrefKey) !== null;
+    let activeSubtitleTrack = parseInt(qs.get('subtitle_track') || localStorage.getItem(subtitlePrefKey) || '-1', 10);
+    if (!isFinite(activeSubtitleTrack)) activeSubtitleTrack = -1;
+    let subtitleTracks = [];
+    let currentSubtitleEl = null;
+    let subtitleCues = [];
+    let subtitleOverlayText = '';
+    let subtitleClockMode = 'local'; // local = video.currentTime, global = offset + currentTime
 
     const app = document.getElementById('app');
     const v = document.getElementById('video');
     const title = document.getElementById('title');
     const mode = document.getElementById('mode');
     const quality = document.getElementById('quality');
+    const audioSelect = document.getElementById('audioTrack');
+    const subtitleSelect = document.getElementById('subtitleTrack');
+    const subtitleOverlay = document.getElementById('subtitleOverlay');
+    let subtitleLoadToken = 0;
     const prepared = document.getElementById('prepared');
     const prepareBtn = document.getElementById('prepareBtn');
     const queueBtn = document.getElementById('queueBtn');
@@ -941,7 +1043,7 @@
     const ipFull = document.getElementById('ipFull');
 
     let hls = null;
-    let sid = 'sid_' + hash(cid);
+    let sid = makeSid();
     let offset = 0;
     let duration = 0;
     let preparedUntil = 0;
@@ -959,7 +1061,7 @@
     let remoteModeTimer = null;
     let hlsMediaRecoveries = 0;
     let hlsSafeFallbackUsed = false;
-    const prepareStateKey = 'lampa_sync_prepare_ui_' + cid;
+    const prepareStateKey = 'lampa_sync_prepare_ui_' + baseCid;
     let prepareState = null;
     let prepareUiTimer = null;
     let preparedPlaybackLoaded = false;
@@ -1001,6 +1103,8 @@
         }
 
         bindEvents();
+        await loadAudioTracks();
+        await refreshPrepareState(false);
 
         if (trans || needsProxy(src)) {
             await startHls(resume, true);
@@ -1055,6 +1159,9 @@
         bindButton(queueBtn, 'queue', openPrepareQueue);
 
         bindVolume();
+        bindAudioTrackSelect();
+        bindSubtitleTrackSelect();
+        bindSubtitleOverlayEvents();
         bindProgress();
 
         bindLandscapeRouter();
@@ -1688,6 +1795,386 @@
             keyCode === 417;
     }
 
+    // Возвращает content_id варианта видео с выбранной аудиодорожкой.
+    // Прогресс просмотра остаётся привязан к обычному cid, а HLS/prepared-кэш — к cid+audio.
+    function mediaContentId() {
+        return activeAudioTrack > 0 ? (baseCid + '_a' + activeAudioTrack) : baseCid;
+    }
+
+    // Отдельный sid нужен, чтобы HLS с разными аудиодорожками не смешивался в одной папке.
+    function makeSid() {
+        return 'sid_' + hash(mediaContentId());
+    }
+
+    // Загружает список аудиодорожек через ffprobe endpoint до запуска HLS.
+    async function loadAudioTracks() {
+        if (!src || audioTracksLoaded) return audioTracks;
+        audioTracksLoaded = true;
+
+        try {
+            const u = API + '?media_info=1&url=' + encodeURIComponent(src) + '&t=' + Date.now();
+            const d = await (await fetch(u, {cache: 'no-store'})).json();
+            audioTracks = d && d.ok && Array.isArray(d.audio_tracks) ? d.audio_tracks : [];
+            subtitleTracks = d && d.ok && Array.isArray(d.subtitle_tracks) ? d.subtitle_tracks : [];
+
+            if (!explicitAudioTrack && audioTracks.length) {
+                const preferred = findPreferredAudioTrack(audioTracks);
+                if (preferred >= 0) activeAudioTrack = preferred;
+            }
+
+            if (!explicitSubtitleTrack) {
+                activeSubtitleTrack = -1;
+            }
+
+            renderAudioTrackSelect();
+            renderSubtitleTrackSelect();
+        } catch (e) {
+            audioTracks = [];
+            subtitleTracks = [];
+            renderAudioTrackSelect();
+            renderSubtitleTrackSelect();
+        }
+
+        return audioTracks;
+    }
+
+    // По умолчанию стараемся выбрать русскую дорожку, если она явно подписана как ru/rus/russian/рус.
+    function findPreferredAudioTrack(tracks) {
+        for (const track of tracks) {
+            const text = [track.language, track.title, track.label].join(' ').toLowerCase();
+            if (/\b(rus|ru|russian)\b/.test(text) || text.indexOf('рус') >= 0) {
+                return Number(track.audio_index || 0);
+            }
+        }
+        const def = tracks.find(track => !!track.default);
+        return def ? Number(def.audio_index || 0) : Number(tracks[0].audio_index || 0);
+    }
+
+    // Рисует выпадающий список аудиодорожек в верхней панели.
+    function renderAudioTrackSelect() {
+        if (!audioSelect) return;
+
+        audioSelect.innerHTML = '';
+        if (!audioTracks.length) {
+            audioSelect.classList.add('hide');
+            return;
+        }
+
+        audioTracks.forEach(track => {
+            const option = document.createElement('option');
+            option.value = String(track.audio_index || 0);
+            option.textContent = track.label || ('Аудио ' + (Number(track.audio_index || 0) + 1));
+            audioSelect.appendChild(option);
+        });
+
+        audioSelect.value = String(activeAudioTrack);
+        audioSelect.classList.remove('hide');
+    }
+
+    // Рисует выпадающий список субтитров. Первый пункт всегда выключает субтитры.
+    function renderSubtitleTrackSelect() {
+        if (!subtitleSelect) return;
+
+        subtitleSelect.innerHTML = '';
+
+        const off = document.createElement('option');
+        off.value = '-1';
+        off.textContent = 'Субтитры: выкл.';
+        subtitleSelect.appendChild(off);
+
+        const usable = subtitleTracks.filter(track => track && track.supported !== false);
+        if (!usable.length) {
+            subtitleSelect.classList.add('hide');
+            return;
+        }
+
+        usable.forEach(track => {
+            const option = document.createElement('option');
+            option.value = String(track.subtitle_index || 0);
+            option.textContent = track.label || ('Субтитры ' + (Number(track.subtitle_index || 0) + 1));
+            subtitleSelect.appendChild(option);
+        });
+
+        subtitleSelect.value = String(activeSubtitleTrack);
+        subtitleSelect.classList.remove('hide');
+    }
+
+    // Удаляет текущие субтитры: и нативный <track>, и наш JS-overlay.
+    function clearSubtitleTrack() {
+        if (currentSubtitleEl && currentSubtitleEl.parentNode) {
+            currentSubtitleEl.parentNode.removeChild(currentSubtitleEl);
+        }
+        currentSubtitleEl = null;
+        subtitleCues = [];
+        subtitleOverlayText = '';
+        subtitleClockMode = 'local';
+        updateSubtitleOverlay(true);
+    }
+
+    // Загружает выбранную дорожку субтитров как WebVTT.
+    // Backend теперь может готовить VTT в фоне: если он возвращает 202/pending,
+    // плеер не падает с ошибкой, а аккуратно ждёт готовый файл и опрашивает endpoint.
+    async function applySubtitleTrack() {
+        clearSubtitleTrack();
+
+        if (activeSubtitleTrack < 0 || !src) return;
+
+        const token = ++subtitleLoadToken;
+        const subtitleOffset = preparedPlaybackLoaded ? 0 : Math.max(0, offset || 0);
+        const url = API +
+            '?subtitle_vtt=1' +
+            '&url=' + encodeURIComponent(src) +
+            '&subtitle_track=' + encodeURIComponent(String(activeSubtitleTrack)) +
+            '&start=' + encodeURIComponent(String(subtitleOffset));
+
+        try {
+            note('Субтитры готовятся...');
+            const text = await waitSubtitleVtt(url, token);
+            if (token !== subtitleLoadToken || activeSubtitleTrack < 0) return;
+
+            subtitleCues = parseWebVtt(text);
+            subtitleClockMode = chooseSubtitleClockMode(subtitleCues, subtitleOffset);
+
+            if (!subtitleCues.length) {
+                console.warn('[Lampa Sync] subtitle vtt has no cues:', text.slice(0, 500));
+                note('Субтитры пустые или не распознаны');
+                return;
+            }
+
+            // Нативный track оставляем как дополнительный fallback для браузеров, где он работает.
+            const tr = document.createElement('track');
+            tr.kind = 'subtitles';
+            tr.label = subtitleSelect && subtitleSelect.selectedIndex >= 0
+                ? subtitleSelect.options[subtitleSelect.selectedIndex].textContent
+                : 'Субтитры';
+            tr.srclang = subtitleLanguage(activeSubtitleTrack) || 'ru';
+            tr.src = url + '&t=' + Date.now();
+            tr.default = true;
+            v.appendChild(tr);
+            currentSubtitleEl = tr;
+
+            tr.addEventListener('load', () => {
+                try {
+                    for (let i = 0; i < v.textTracks.length; i++) v.textTracks[i].mode = 'disabled';
+                    if (tr.track) tr.track.mode = 'showing';
+                } catch (e) {}
+            });
+
+            setTimeout(() => {
+                try {
+                    for (let i = 0; i < v.textTracks.length; i++) v.textTracks[i].mode = 'disabled';
+                    if (tr.track) tr.track.mode = 'showing';
+                } catch (e) {}
+                updateSubtitleOverlay(true);
+            }, 150);
+
+            note('Субтитры включены');
+        } catch (e) {
+            if (token !== subtitleLoadToken) return;
+            console.warn('[Lampa Sync] subtitle apply failed:', e);
+            note(String(e && e.message ? e.message : 'Ошибка загрузки субтитров'));
+        }
+    }
+
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    async function waitSubtitleVtt(baseUrl, token) {
+        const maxAttempts = 300; // до 10 минут: субтитры извлекаются полным проходом от начала файла
+        let lastError = '';
+
+        for (let i = 0; i < maxAttempts; i++) {
+            if (token !== subtitleLoadToken) throw new Error('Загрузка субтитров отменена');
+
+            const response = await fetch(baseUrl + '&t=' + Date.now(), {cache: 'no-store'});
+            const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+            const text = await response.text();
+
+            if (response.ok && text.indexOf('-->') >= 0) {
+                return text;
+            }
+
+            let json = null;
+            if (contentType.indexOf('application/json') >= 0 || /^\s*\{/.test(text)) {
+                try { json = JSON.parse(text); } catch (e) { json = null; }
+            }
+
+            if (response.status === 202 || (json && json.pending)) {
+                if (i === 0) note('Субтитры извлекаются из файла. Это может занять несколько минут...');
+                await sleep(2000);
+                continue;
+            }
+
+            lastError = json && json.error ? json.error : (text ? text.slice(0, 260) : ('HTTP ' + response.status));
+            break;
+        }
+
+        throw new Error(lastError ? ('Субтитры не загрузились: ' + lastError) : 'Субтитры не успели подготовиться');
+    }
+
+    // Подписки для собственной отрисовки субтитров поверх видео.
+    function bindSubtitleOverlayEvents() {
+        v.addEventListener('timeupdate', () => updateSubtitleOverlay(false));
+        v.addEventListener('seeking', () => updateSubtitleOverlay(true));
+        v.addEventListener('seeked', () => updateSubtitleOverlay(true));
+        v.addEventListener('play', () => updateSubtitleOverlay(true));
+        v.addEventListener('pause', () => updateSubtitleOverlay(true));
+    }
+
+    // Показывает активный cue на текущем времени video.currentTime.
+    function updateSubtitleOverlay(force) {
+        if (!subtitleOverlay) return;
+
+        if (!subtitleCues.length || activeSubtitleTrack < 0) {
+            subtitleOverlay.style.display = 'none';
+            subtitleOverlay.textContent = '';
+            subtitleOverlayText = '';
+            return;
+        }
+
+        const t = subtitleCurrentTime();
+        let text = '';
+
+        for (const cue of subtitleCues) {
+            if (t >= cue.start && t <= cue.end) {
+                text = cue.text;
+                break;
+            }
+        }
+
+        if (force || text !== subtitleOverlayText) {
+            subtitleOverlayText = text;
+            subtitleOverlay.textContent = text;
+            subtitleOverlay.style.display = text ? 'block' : 'none';
+        }
+    }
+
+    // Очень простой WebVTT parser: нам нужны только start/end/text.
+    function parseWebVtt(raw) {
+        raw = String(raw || '').replace(/^\uFEFF/, '').replace(/\r/g, '');
+        const blocks = raw.split(/\n\s*\n/g);
+        const cues = [];
+
+        for (const block of blocks) {
+            const lines = block.split('\n').map(x => x.trimEnd()).filter(Boolean);
+            if (!lines.length) continue;
+            if (/^WEBVTT/i.test(lines[0]) || /^NOTE\b/i.test(lines[0])) continue;
+
+            let timeLineIndex = lines.findIndex(line => line.indexOf('-->') >= 0);
+            if (timeLineIndex < 0) continue;
+
+            const m = lines[timeLineIndex].match(/([^\s]+)\s*-->\s*([^\s]+)/);
+            if (!m) continue;
+
+            let start = parseVttTime(m[1]);
+            let end = parseVttTime(m[2]);
+            if (!isFinite(start) || !isFinite(end) || end <= start) continue;
+
+            const text = lines.slice(timeLineIndex + 1)
+                .join('\n')
+                .replace(/<[^>]+>/g, '')
+                .replace(/\\N/g, '\n')
+                .trim();
+
+            if (!text) continue;
+
+            cues.push({start, end, text});
+        }
+
+        cues.sort((a, b) => a.start - b.start);
+        return cues;
+    }
+
+    // Выбирает, по каким часам сверять субтитры.
+    // Временный HLS может начинаться с currentTime=0 при offset=40:00, а WebVTT
+    // может прийти либо с локальными таймкодами, либо с абсолютными таймкодами фильма.
+    function chooseSubtitleClockMode(cues, subtitleOffset) {
+        if (!Array.isArray(cues) || !cues.length) return 'local';
+
+        const localT = Math.max(0, Number(v.currentTime || 0));
+        const globalT = Math.max(0, Number(globalTime ? globalTime() : localT));
+
+        function distanceToNearest(t) {
+            let best = Infinity;
+            for (const cue of cues) {
+                if (t >= cue.start && t <= cue.end) return 0;
+                best = Math.min(best, Math.abs(cue.start - t), Math.abs(cue.end - t));
+            }
+            return best;
+        }
+
+        const dl = distanceToNearest(localT);
+        const dg = distanceToNearest(globalT);
+
+        if (subtitleOffset > 0 && dg + 5 < dl) return 'global';
+        if (subtitleOffset > 0 && cues[0].start > Math.max(30, subtitleOffset * 0.5)) return 'global';
+        return 'local';
+    }
+
+    function subtitleCurrentTime() {
+        if (subtitleClockMode === 'global') {
+            return Math.max(0, Number(globalTime ? globalTime() : 0));
+        }
+        return Math.max(0, Number(v.currentTime || 0));
+    }
+
+    function parseVttTime(value) {
+        const parts = String(value || '').replace(',', '.').split(':');
+        let h = 0, m = 0, s = 0;
+
+        if (parts.length === 3) {
+            h = Number(parts[0]);
+            m = Number(parts[1]);
+            s = Number(parts[2]);
+        } else if (parts.length === 2) {
+            m = Number(parts[0]);
+            s = Number(parts[1]);
+        } else {
+            s = Number(parts[0]);
+        }
+
+        return h * 3600 + m * 60 + s;
+    }
+
+    function subtitleLanguage(subtitleIndex) {
+        const track = subtitleTracks.find(t => Number(t.subtitle_index || 0) === Number(subtitleIndex));
+        return track && track.language ? String(track.language).slice(0, 8) : '';
+    }
+
+    // При смене субтитров видео не пересобирается: меняется только подключённый WebVTT.
+    function bindSubtitleTrackSelect() {
+        if (!subtitleSelect) return;
+        subtitleSelect.addEventListener('change', async e => {
+            const next = parseInt(e.target.value || '-1', 10);
+            activeSubtitleTrack = isFinite(next) ? next : -1;
+            localStorage.setItem(subtitlePrefKey, String(activeSubtitleTrack));
+            note(activeSubtitleTrack < 0 ? 'Субтитры выключены' : 'Субтитры: ' + (subtitleSelect.options[subtitleSelect.selectedIndex]?.textContent || ('#' + (activeSubtitleTrack + 1))));
+            await applySubtitleTrack();
+        });
+    }
+
+    // При смене дорожки пересобираем HLS с той же позиции, но уже с другим -map 0:a:N.
+    function bindAudioTrackSelect() {
+        if (!audioSelect) return;
+        audioSelect.addEventListener('change', async e => {
+            const next = Math.max(0, parseInt(e.target.value || '0', 10) || 0);
+            if (next === activeAudioTrack) return;
+
+            const pos = globalTime();
+            activeAudioTrack = next;
+            localStorage.setItem(audioPrefKey, String(activeAudioTrack));
+            sid = makeSid();
+            hlsSafeFallbackUsed = false;
+            prepareState = {status: 'idle', progress: 0, updated_at: Date.now()};
+            renderPrepareButton();
+            note('Аудиодорожка: ' + (audioSelect.options[audioSelect.selectedIndex]?.textContent || ('#' + (activeAudioTrack + 1))));
+
+            await refreshPrepareState(false);
+            if (trans || needsProxy(src)) await startHls(pos, true);
+        });
+    }
+
     // Открывает страницу очереди подготовки.
     function openPrepareQueue() {
         window.open(new URL('prepare_queue.html?t=' + Date.now(), window.location.href).toString(), '_blank');
@@ -1699,13 +2186,14 @@
     async function fetchPrepareStatus() {
         const u = API +
             '?prepare_status=1' +
-            '&content_id=' + encodeURIComponent(cid) +
+            '&content_id=' + encodeURIComponent(mediaContentId()) +
             '&url=' + encodeURIComponent(src || '') +
+            '&audio_track=' + encodeURIComponent(String(activeAudioTrack)) +
             '&t=' + Date.now();
         const r = await fetch(u, {cache: 'no-store'});
         const d = await r.json();
         if (!d || !d.ok) throw new Error((d && d.error) || 'prepare_status failed');
-        return d.item || {status: 'idle', content_id: cid};
+        return d.item || {status: 'idle', content_id: mediaContentId(), audio_track: activeAudioTrack};
     }
     async function refreshPrepareState(showErrors) {
         try {
@@ -1728,7 +2216,9 @@
             status: status,
             progress: Math.max(0, Math.min(100, Number(item.progress || 0))),
             title: item.title || titleText,
-            content_id: item.content_id || cid,
+            content_id: item.content_id || mediaContentId(),
+            audio_track: Number(item.audio_track || activeAudioTrack),
+            audio_tracks: Array.isArray(item.audio_tracks) ? item.audio_tracks : [],
             prepare_key: item.prepare_key || '',
             hls_url: item.hls_url || '',
             duration: Number(item.duration || 0),
@@ -1794,7 +2284,7 @@
 
         if (status === 'ready') {
             try {
-                const u = API + '?prepare_delete=1&content_id=' + encodeURIComponent(cid) + '&t=' + Date.now();
+                const u = API + '?prepare_delete=1&content_id=' + encodeURIComponent(mediaContentId()) + '&t=' + Date.now();
                 const d = await (await fetch(u, {cache: 'no-store'})).json();
                 if (!d.ok) throw new Error(d.error || 'delete failed');
                 prepareState = {status: 'idle', progress: 0, updated_at: Date.now()};
@@ -1818,9 +2308,10 @@
             const u = API +
                 '?prepare_start=1' +
                 '&url=' + encodeURIComponent(src) +
-                '&content_id=' + encodeURIComponent(cid) +
+                '&content_id=' + encodeURIComponent(mediaContentId()) +
                 '&title=' + encodeURIComponent(titleText) +
                 '&quality=' + encodeURIComponent(activeQuality) +
+                '&audio_track=' + encodeURIComponent(String(activeAudioTrack)) +
                 '&t=' + Date.now();
             const d = await (await fetch(u, {cache: 'no-store'})).json();
             if (!d.ok) throw new Error(d.error || 'prepare_start failed');
@@ -1880,9 +2371,11 @@
             if (resume > 0) v.currentTime = resume;
             ui();
         };
+        await applySubtitleTrack();
         tryPlay();
     }
     async function startHls(start, force) {
+        sid = makeSid();
         const requestedStart = Math.max(0, start || 0);
 
         offset = requestedStart;
@@ -1928,6 +2421,7 @@
             destroyHls();
             await loadHls(readyPrepared.hls_url + '&t=' + Date.now());
             installPreparedMetadataFix();
+            await applySubtitleTrack();
             hideStatus();
 
             ui();
@@ -1946,10 +2440,11 @@
         const u = API +
             '?transcode_start=1' +
             '&url=' + encodeURIComponent(src) +
-            '&content_id=' + encodeURIComponent(cid) +
+            '&content_id=' + encodeURIComponent(mediaContentId()) +
             '&sid=' + encodeURIComponent(sid) +
             '&start=' + encodeURIComponent(String(offset)) +
             '&quality=' + encodeURIComponent(activeQuality) +
+            '&audio_track=' + encodeURIComponent(String(activeAudioTrack)) +
             '&force=' + (force ? '1' : '0') +
             '&t=' + Date.now();
 
@@ -1971,6 +2466,7 @@
 
             if (s.ready && s.hls_url) {
                 await loadHls(s.hls_url);
+                await applySubtitleTrack();
                 hideStatus();
                 return;
             }
@@ -2177,7 +2673,11 @@
         lastSaved = sec;
 
         const payload = {
-            content_id: cid,
+            // Главный ключ записи прогресса. Должен быть стабильным и уникальным для фильма/серии.
+            content_id: baseCid,
+            progress_content_id: baseCid,
+            media_content_id: mediaCid,
+            progress_aliases: progressIds,
             title: titleText,
             url: src,
             position: pos,
@@ -2323,11 +2823,29 @@
     }
     async function loadProgress() {
         try {
-            const r = await fetch(API + '?content_id=' + encodeURIComponent(cid) + '&t=' + Date.now());
+            const ids = uniqueProgressIds(progressIds.length ? progressIds : [baseCid]);
+            const url = API +
+                '?content_id=' + encodeURIComponent(baseCid) +
+                '&content_ids=' + encodeURIComponent(ids.join(',')) +
+                '&t=' + Date.now();
+
+            const r = await fetch(url, {cache: 'no-store'});
             return r.ok ? await r.json() : null;
         } catch (e) {
             return null;
         }
+    }
+
+    function uniqueProgressIds(list) {
+        const out = [];
+
+        (list || []).forEach(v => {
+            const s = String(v || '').trim();
+            if (!s || out.includes(s)) return;
+            out.push(s);
+        });
+
+        return out;
     }
 
     // Нормализует прогресс из query/API.

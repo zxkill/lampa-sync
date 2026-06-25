@@ -28,10 +28,16 @@
         <option value="balanced">balanced</option>
         <option value="safe">safe</option>
       </select>
+      <select id="audioTrack" title="Номер аудиодорожки">
+        <option value="0">Аудио 1</option>
+        <option value="1">Аудио 2</option>
+        <option value="2">Аудио 3</option>
+        <option value="3">Аудио 4</option>
+      </select>
       <button class="btn ok" id="addBtn">Добавить</button>
     </div>
   </div>
-  <div class="hint">Можно вставить прямую ссылку на поток TorrServer или ссылку на наш player.html. Задача попадёт в очередь, worker сам запустится в фоне.</div>
+  <div class="hint">Можно вставить прямую ссылку на поток TorrServer или ссылку на наш player.html. Задача попадёт в очередь, worker сам запустится в фоне. Если у видео несколько дорожек, выбери номер аудио: 1 — первая дорожка, 2 — вторая и т.д.</div>
   <div id="msg" class="msg"></div>
 </div>
 
@@ -62,10 +68,11 @@ async function add(){
   const input=document.getElementById('url');
   const url=input.value.trim();
   const quality=document.getElementById('quality').value;
+  const audioTrack=document.getElementById('audioTrack').value;
   if(!url){show('Вставь ссылку.', 'bad');return}
   show('Добавляю...');
   try{
-    const d=await api(API+'?prepare_start=1&url='+encodeURIComponent(url)+'&quality='+encodeURIComponent(quality)+'&t='+Date.now());
+    const d=await api(API+'?prepare_start=1&url='+encodeURIComponent(url)+'&quality='+encodeURIComponent(quality)+'&audio_track='+encodeURIComponent(audioTrack)+'&t='+Date.now());
     if(!d.ok){show(d.error||'Не удалось добавить.', 'bad');return}
     input.value='';
     show(d.already_exists?'Уже есть в очереди.':'Добавлено в очередь.', 'ok');
@@ -103,7 +110,7 @@ async function load(){
       if(st==='error'||st==='retry') actions.push(`<button class="btn ok" onclick="retry('${esc(it.content_id)}')">Повторить</button>`);
       actions.push(`<button class="btn bad" onclick="del('${esc(it.content_id)}')">Удалить</button>`);
       return `<div class="item">
-        <div class="top"><div><div class="title">${esc(it.title||it.content_id)}</div><div class="meta"><span class="pill ${cls}">${it.stalled?'Зависло':statusText(st)}</span><span class="pill">${Math.floor(p)}%</span><span class="pill">${esc(it.quality||'fast')}</span><span class="pill">${esc(segText(it))}</span><span class="pill">${esc(timeText(it))}</span><span class="pill">попытка ${attempt}</span>${rInfo?`<span class="pill retry">повтор ${esc(rInfo)}</span>`:''}</div></div><div class="actions">${actions.join('')}</div></div>
+        <div class="top"><div><div class="title">${esc(it.title||it.content_id)}</div><div class="meta"><span class="pill ${cls}">${it.stalled?'Зависло':statusText(st)}</span><span class="pill">${Math.floor(p)}%</span><span class="pill">${esc(it.quality||'fast')}</span><span class="pill">аудио ${Number(it.audio_track||0)+1}</span><span class="pill">${esc(segText(it))}</span><span class="pill">${esc(timeText(it))}</span><span class="pill">попытка ${attempt}</span>${rInfo?`<span class="pill retry">повтор ${esc(rInfo)}</span>`:''}</div></div><div class="actions">${actions.join('')}</div></div>
         <div class="bar"><div class="fill" style="width:${p}%"></div></div>
         ${it.error?`<pre>${esc(it.error)}</pre>`:''}
         <div class="small">content_id: ${esc(it.content_id)} · worker_pid: ${Number(it.worker_pid||0)} · ffmpeg_pid: ${Number(it.pid||0)}${it.duration_source?` · duration: ${esc(it.duration_source)}`:''}</div>

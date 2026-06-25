@@ -189,13 +189,14 @@ function prepare_db(string $dbFile): PDO {
         'torrent_hash' => "TEXT NOT NULL DEFAULT ''",
         'file_index' => 'INTEGER NOT NULL DEFAULT -1',
         'stream_path' => "TEXT NOT NULL DEFAULT ''",
+        'audio_track' => 'INTEGER NOT NULL DEFAULT 0',
     ];
     foreach ($add as $name => $sql) {
         if (!isset($cols[$name])) $pdo->exec('ALTER TABLE prepare_queue ADD COLUMN ' . $name . ' ' . $sql);
     }
     $pdo->exec('CREATE INDEX IF NOT EXISTS ix_prepare_queue_status ON prepare_queue(status, updated_at)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS ix_prepare_queue_retry ON prepare_queue(status, next_retry_at)');
-    $pdo->exec('CREATE INDEX IF NOT EXISTS ix_prepare_queue_torrent ON prepare_queue(torrent_hash, file_index)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS ix_prepare_queue_torrent ON prepare_queue(torrent_hash, file_index, audio_track)');
     return $pdo;
 }
 
@@ -280,6 +281,7 @@ function process_job(PDO $pdo, array $job, string $preparedRoot): void {
     $key = (string)$job['prepare_key'];
     $url = (string)($job['normalized_url'] ?: $job['source_url']);
     $quality = (string)($job['quality'] ?: 'fast');
+    $audioTrack = max(0, (int)($job['audio_track'] ?? 0));
     $dir = session_dir($preparedRoot, $key);
 
     rrmdir($dir);
@@ -289,6 +291,7 @@ function process_job(PDO $pdo, array $job, string $preparedRoot): void {
     file_put_contents("$dir/source_mode.txt", 'background_prepare_from_start');
     file_put_contents("$dir/offset.txt", '0');
     file_put_contents("$dir/quality.txt", $quality);
+    file_put_contents("$dir/audio_track.txt", (string)$audioTrack);
     file_put_contents("$dir/api_version.txt", API_VERSION);
     file_put_contents("$dir/content_id.txt", (string)$job['content_id']);
 
@@ -296,7 +299,10 @@ function process_job(PDO $pdo, array $job, string $preparedRoot): void {
         heartbeat_job($pdo, $id, 0, 0, 0, 0, true);
         worker_log('media_probe_start', ['id'=>$id, 'url'=>$url, 'mode'=>'background_prepare_from_start']);
         $mi = media_info($url, $dir);
-        worker_log('media_probe_done', ['id'=>$id, 'duration'=>(float)($mi['duration'] ?? 0), 'video_codec'=>(string)($mi['video_codec'] ?? ''), 'audio_codec'=>(string)($mi['audio_codec'] ?? '')]);
+        $audioTrack = normalize_audio_track($mi, $audioTrack);
+        file_put_contents("$dir/audio_track.txt", (string)$audioTrack);
+        update_job($pdo, $id, ['audio_track'=>$audioTrack]);
+        worker_log('media_probe_done', ['id'=>$id, 'duration'=>(float)($mi['duration'] ?? 0), 'video_codec'=>(string)($mi['video_codec'] ?? ''), 'audio_codec'=>(string)($mi['audio_codec'] ?? ''), 'audio_track'=>$audioTrack]);
 
         $duration = (float)($mi['duration'] ?? 0);
         update_job($pdo, $id, ['duration'=>$duration, 'updated_at'=>now_ms(), 'last_heartbeat_at'=>now_ms(), 'worker_pid'=>getmypid()]);
@@ -324,7 +330,7 @@ function process_job(PDO $pdo, array $job, string $preparedRoot): void {
             '-headers '.escapeshellarg($headers),
             '-i '.escapeshellarg($url),
             '-map 0:v:0',
-            '-map 0:a:0?',
+            '-map 0:a:'.$audioTrack.'?',
             '-sn',
             '-dn'
         ];
@@ -659,11 +665,8 @@ function ffmpeg_log_has_error(string $log): bool {
  * Запускает ffprobe по TorrServer URL и кэширует параметры медиа.
  */
 function media_info(string $url,string $dir): array {
-    $cache = "$dir/media_info.json";
-    if (is_file($cache) && filesize($cache) > 0) {
-        $cached = read_json($cache);
-        if (is_array($cached) && !empty($cached)) return $cached;
-    }
+    $cache="$dir/media_info.json";
+    if(is_file($cache)&&filesize($cache)>0)return read_json($cache);
 
     $headers = lampa_sync_ffmpeg_headers();
     $cmd = 'timeout 45s '.escapeshellarg(FFPROBE_BIN).
@@ -691,6 +694,7 @@ function media_info(string $url,string $dir): array {
         'video_height'=>0,
         'audio_codec'=>'',
         'audio_channels'=>0,
+        'audio_tracks'=>[],
     ];
 
     if (isset($j['format']['duration']) && is_numeric($j['format']['duration']) && (float)$j['format']['duration'] > 0) {
@@ -698,6 +702,7 @@ function media_info(string $url,string $dir): array {
         $out['duration_source'] = 'ffprobe_format';
     }
 
+    $audioIndex = 0;
     foreach (($j['streams'] ?? []) as $st) {
         if (($st['codec_type'] ?? '') === 'video' && $out['video_codec'] === '') {
             $out['video_codec'] = strtolower((string)($st['codec_name'] ?? ''));
@@ -709,13 +714,30 @@ function media_info(string $url,string $dir): array {
                 $out['duration_source'] = 'ffprobe_video_stream';
             }
         }
-        if (($st['codec_type'] ?? '') === 'audio' && $out['audio_codec'] === '') {
-            $out['audio_codec'] = strtolower((string)($st['codec_name'] ?? ''));
-            $out['audio_channels'] = (int)($st['channels'] ?? 0);
-            if ($out['duration'] <= 0 && isset($st['duration']) && is_numeric($st['duration']) && (float)$st['duration'] > 0) {
-                $out['duration'] = (float)$st['duration'];
-                $out['duration_source'] = 'ffprobe_audio_stream';
+        if (($st['codec_type'] ?? '') === 'audio') {
+            $tags = is_array($st['tags'] ?? null) ? $st['tags'] : [];
+            $disp = is_array($st['disposition'] ?? null) ? $st['disposition'] : [];
+            $track = [
+                'audio_index'=>$audioIndex,
+                'stream_index'=>(int)($st['index'] ?? $audioIndex),
+                'codec'=>strtolower((string)($st['codec_name'] ?? '')),
+                'channels'=>(int)($st['channels'] ?? 0),
+                'language'=>strtolower((string)($tags['language'] ?? '')),
+                'title'=>(string)($tags['title'] ?? ''),
+                'default'=>!empty($disp['default']),
+            ];
+            $track['label'] = audio_track_label($track);
+            $out['audio_tracks'][] = $track;
+
+            if ($out['audio_codec'] === '') {
+                $out['audio_codec'] = $track['codec'];
+                $out['audio_channels'] = $track['channels'];
+                if ($out['duration'] <= 0 && isset($st['duration']) && is_numeric($st['duration']) && (float)$st['duration'] > 0) {
+                    $out['duration'] = (float)$st['duration'];
+                    $out['duration_source'] = 'ffprobe_audio_stream';
+                }
             }
+            $audioIndex++;
         }
     }
 
@@ -724,8 +746,32 @@ function media_info(string $url,string $dir): array {
 }
 
 /**
- * Параметры аудио для браузерно-совместимого AAC.
+ * Читабельное имя аудиодорожки для страницы очереди и плеера.
  */
+function audio_track_label(array $track): string {
+    $parts=[];
+    $parts[]='Аудио '.((int)($track['audio_index']??0)+1);
+    if(!empty($track['language']))$parts[]=strtoupper((string)$track['language']);
+    if(!empty($track['title']))$parts[]=(string)$track['title'];
+    if(!empty($track['codec']))$parts[]=strtoupper((string)$track['codec']);
+    if(!empty($track['channels']))$parts[]=(string)$track['channels'].'ch';
+    if(!empty($track['default']))$parts[]='default';
+    return implode(' · ', $parts);
+}
+
+/**
+ * Проверяет, что выбранная дорожка есть в исходнике.
+ */
+function normalize_audio_track(array $mediaInfo, int $requested): int {
+    $tracks=is_array($mediaInfo['audio_tracks']??null)?$mediaInfo['audio_tracks']:[];
+    if(!$tracks)return 0;
+    $requested=max(0,$requested);
+    foreach($tracks as $track){
+        if((int)($track['audio_index']??-1)===$requested)return $requested;
+    }
+    return (int)($tracks[0]['audio_index']??0);
+}
+
 function audio_browser_args(string $bitrate='128k', bool $resetPts=true): array {
     $filter = $resetPts ? 'aresample=async=1000:first_pts=0' : 'aresample=async=1000';
     return ['-c:a aac','-profile:a aac_low','-b:a '.escapeshellarg($bitrate),'-ac 2','-ar 48000','-af '.escapeshellarg($filter)];

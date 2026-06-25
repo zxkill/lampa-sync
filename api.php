@@ -9,7 +9,7 @@ ini_set('log_errors', '1');
 // Подключаем локальные настройки: домен, TorrServer, пути к ffmpeg и рабочую директорию.
 require_once __DIR__ . '/bootstrap.php';
 
-if (!defined('API_VERSION')) define('API_VERSION', 'v1.0.0-public');
+if (!defined('API_VERSION')) define('API_VERSION', 'v1.0.7-progress-stream-id-write-fix');
 
 
 // Основные рабочие директории и SQLite-база очереди подготовки.
@@ -29,6 +29,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') exit;
 
 try {
     cleanup_hls($HLS_DIR, false);
+    /*
+     * Важно: специальные debug-запросы должны обрабатываться раньше общего debug=1.
+     * Например, subtitle_vtt=1&debug=1 должен попасть в отладку субтитров,
+     * а не в общий диагностический вывод api.php?debug=1.
+     */
+    if (g('subtitle_vtt') === '1') subtitle_vtt_endpoint($HLS_DIR);
+    if (g('media_info') === '1') media_info_endpoint($HLS_DIR);
     if (g('debug') === '1') debug($DATA_DIR, $HLS_DIR);
     if (g('prepared_hls') === '1') serve_prepared_hls($PREPARED_DIR);
     if (g('prepare_worker_debug') === '1') prepare_worker_debug($PREPARE_DB, $PREPARED_DIR);
@@ -304,6 +311,7 @@ function prepare_db(string $dbFile): PDO {
         'torrent_hash' => "TEXT NOT NULL DEFAULT ''",
         'file_index' => 'INTEGER NOT NULL DEFAULT -1',
         'stream_path' => "TEXT NOT NULL DEFAULT ''",
+        'audio_track' => 'INTEGER NOT NULL DEFAULT 0',
     ];
     foreach ($add as $name => $sql) {
         if (!isset($cols[$name])) {
@@ -312,7 +320,7 @@ function prepare_db(string $dbFile): PDO {
     }
     $pdo->exec('CREATE INDEX IF NOT EXISTS ix_prepare_queue_status ON prepare_queue(status, updated_at)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS ix_prepare_queue_retry ON prepare_queue(status, next_retry_at)');
-    $pdo->exec('CREATE INDEX IF NOT EXISTS ix_prepare_queue_torrent ON prepare_queue(torrent_hash, file_index)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS ix_prepare_queue_torrent ON prepare_queue(torrent_hash, file_index, audio_track)');
     return $pdo;
 }
 
@@ -393,6 +401,8 @@ function prepare_row_out(array $r, string $preparedRoot): array {
         'torrent_hash'=>$torrentHash,
         'file_index'=>$fileIndex,
         'stream_path'=>$streamPath,
+        'audio_track'=>(int)($r['audio_track'] ?? 0),
+        'audio_tracks'=>audio_tracks_from_media_cache($dir),
         'torrent_key'=>($torrentHash !== '' && $fileIndex >= 0) ? ($torrentHash . ':' . $fileIndex) : '',
         'status'=>$status,
         'progress'=>$progress,
@@ -442,9 +452,10 @@ function prepare_get_row(PDO $pdo, string $cid): ?array {
 /**
  * Создаёт content_id для ручного добавления по stream URL.
  */
-function prepare_stream_content_id(string $url): string {
+function prepare_stream_content_id(string $url, int $audioTrack = 0): string {
     $nu = norm_prepare_url(extract_prepare_source_url($url));
-    return 'stream_' . substr(sha1($nu), 0, 16);
+    $base = 'stream_' . substr(sha1($nu), 0, 16);
+    return $audioTrack > 0 ? ($base . '_a' . $audioTrack) : $base;
 }
 
 /**
@@ -487,22 +498,22 @@ function prepare_torrent_identity(string $url): array {
 /**
  * Ищет задачу по source/normalized URL и torrent hash:index.
  */
-function prepare_get_row_by_url(PDO $pdo, string $url): ?array {
+function prepare_get_row_by_url(PDO $pdo, string $url, int $audioTrack = 0): ?array {
     $url = extract_prepare_source_url($url);
     if ($url === '' || !preg_match('#^https?://#i', $url)) return null;
     $nu = norm_prepare_url($url);
-    $streamCid = prepare_stream_content_id($url);
+    $streamCid = prepare_stream_content_id($url, $audioTrack);
     $identity = prepare_torrent_identity($url);
 
     if ($identity['torrent_hash'] !== '' && (int)$identity['file_index'] >= 0) {
-        $st = $pdo->prepare('SELECT * FROM prepare_queue WHERE torrent_hash=:th AND file_index=:fi ORDER BY updated_at DESC LIMIT 1');
-        $st->execute(['th'=>$identity['torrent_hash'], 'fi'=>(int)$identity['file_index']]);
+        $st = $pdo->prepare('SELECT * FROM prepare_queue WHERE torrent_hash=:th AND file_index=:fi AND audio_track=:at ORDER BY updated_at DESC LIMIT 1');
+        $st->execute(['th'=>$identity['torrent_hash'], 'fi'=>(int)$identity['file_index'], 'at'=>$audioTrack]);
         $row = $st->fetch(PDO::FETCH_ASSOC);
         if (is_array($row)) return $row;
     }
 
-    $st = $pdo->prepare('SELECT * FROM prepare_queue WHERE normalized_url=:nu OR source_url=:src OR content_id=:cid ORDER BY updated_at DESC LIMIT 1');
-    $st->execute(['nu'=>$nu, 'src'=>$url, 'cid'=>$streamCid]);
+    $st = $pdo->prepare('SELECT * FROM prepare_queue WHERE (normalized_url=:nu OR source_url=:src OR content_id=:cid) AND audio_track=:at ORDER BY updated_at DESC LIMIT 1');
+    $st->execute(['nu'=>$nu, 'src'=>$url, 'cid'=>$streamCid, 'at'=>$audioTrack]);
     $r = $st->fetch(PDO::FETCH_ASSOC);
     return is_array($r) ? $r : null;
 }
@@ -703,11 +714,13 @@ function prepare_start(string $dbFile, string $preparedRoot): void {
     $title = req('title', '');
     if ($title === '') $title = prepare_title_from_url($nu);
     $quality = req('quality', 'fast');
-    $key = prepare_key($cid, $nu);
+    $audioTrack = max(0, (int)req('audio_track', '0'));
+    if ($cid === '' || str_starts_with($cid, 'stream_')) $cid = prepare_stream_content_id($nu, $audioTrack);
+    $key = prepare_key($cid, $nu . '#a' . $audioTrack);
     $now = prepare_now_ms();
     $pdo = prepare_db($dbFile);
     $existing = prepare_get_row($pdo, $cid);
-    if (!$existing) $existing = prepare_get_row_by_url($pdo, $url);
+    if (!$existing) $existing = prepare_get_row_by_url($pdo, $url, $audioTrack);
     if ($existing && !empty($existing['content_id'])) {
         $cid = (string)$existing['content_id'];
         $key = (string)($existing['prepare_key'] ?: prepare_key($cid, $nu));
@@ -720,11 +733,11 @@ function prepare_start(string $dbFile, string $preparedRoot): void {
     }
 
     if ($existing) {
-        $st = $pdo->prepare('UPDATE prepare_queue SET prepare_key=:pkey,title=:title,source_url=:src,normalized_url=:nu,torrent_hash=:th,file_index=:fi,stream_path=:sp,quality=:quality,status=\'queued\',progress=0,duration=0,prepared_seconds=0,segments=0,pid=0,worker_pid=0,attempts=0,max_attempts=3,next_retry_at=0,last_heartbeat_at=0,last_progress_at=0,cancel_requested=0,error=\'\',hls_url=:hls,updated_at=:updated,started_at=0,finished_at=0 WHERE content_id=:cid');
-        $st->execute(['pkey'=>$key,'title'=>$title,'src'=>$url,'nu'=>$nu,'th'=>$torrentHash,'fi'=>$fileIndex,'sp'=>$streamPath,'quality'=>$quality,'hls'=>prepare_public_hls_url($key),'updated'=>$now,'cid'=>$cid]);
+        $st = $pdo->prepare('UPDATE prepare_queue SET prepare_key=:pkey,title=:title,source_url=:src,normalized_url=:nu,torrent_hash=:th,file_index=:fi,stream_path=:sp,audio_track=:at,quality=:quality,status=\'queued\',progress=0,duration=0,prepared_seconds=0,segments=0,pid=0,worker_pid=0,attempts=0,max_attempts=3,next_retry_at=0,last_heartbeat_at=0,last_progress_at=0,cancel_requested=0,error=\'\',hls_url=:hls,updated_at=:updated,started_at=0,finished_at=0 WHERE content_id=:cid');
+        $st->execute(['pkey'=>$key,'title'=>$title,'src'=>$url,'nu'=>$nu,'th'=>$torrentHash,'fi'=>$fileIndex,'sp'=>$streamPath,'at'=>$audioTrack,'quality'=>$quality,'hls'=>prepare_public_hls_url($key),'updated'=>$now,'cid'=>$cid]);
     } else {
-        $st = $pdo->prepare('INSERT INTO prepare_queue(content_id,prepare_key,title,source_url,normalized_url,torrent_hash,file_index,stream_path,quality,status,progress,hls_url,created_at,updated_at,max_attempts) VALUES(:cid,:pkey,:title,:src,:nu,:th,:fi,:sp,:quality,\'queued\',0,:hls,:created,:updated,3)');
-        $st->execute(['cid'=>$cid,'pkey'=>$key,'title'=>$title,'src'=>$url,'nu'=>$nu,'th'=>$torrentHash,'fi'=>$fileIndex,'sp'=>$streamPath,'quality'=>$quality,'hls'=>prepare_public_hls_url($key),'created'=>$now,'updated'=>$now]);
+        $st = $pdo->prepare('INSERT INTO prepare_queue(content_id,prepare_key,title,source_url,normalized_url,torrent_hash,file_index,stream_path,audio_track,quality,status,progress,hls_url,created_at,updated_at,max_attempts) VALUES(:cid,:pkey,:title,:src,:nu,:th,:fi,:sp,:at,:quality,\'queued\',0,:hls,:created,:updated,3)');
+        $st->execute(['cid'=>$cid,'pkey'=>$key,'title'=>$title,'src'=>$url,'nu'=>$nu,'th'=>$torrentHash,'fi'=>$fileIndex,'sp'=>$streamPath,'at'=>$audioTrack,'quality'=>$quality,'hls'=>prepare_public_hls_url($key),'created'=>$now,'updated'=>$now]);
     }
 
     $spawn = spawn_prepare_worker();
@@ -744,12 +757,13 @@ function prepare_start(string $dbFile, string $preparedRoot): void {
 function prepare_status(string $dbFile, string $preparedRoot): void {
     $cid = g('content_id');
     $url = g('url');
+    $audioTrack = max(0, (int)g('audio_track','0'));
     $pdo = prepare_db($dbFile);
     if ($cid !== '' || $url !== '') {
         $row = null;
         if ($cid !== '') $row = prepare_get_row($pdo, $cid);
-        if (!$row && $url !== '') $row = prepare_get_row_by_url($pdo, $url);
-        if (!$row) json(['ok'=>true,'exists'=>false,'item'=>['status'=>'idle','content_id'=>$cid ?: ($url !== '' ? prepare_stream_content_id($url) : '')]]);
+        if (!$row && $url !== '') $row = prepare_get_row_by_url($pdo, $url, $audioTrack);
+        if (!$row) json(['ok'=>true,'exists'=>false,'item'=>['status'=>'idle','content_id'=>$cid ?: ($url !== '' ? prepare_stream_content_id($url, $audioTrack) : ''),'audio_track'=>$audioTrack]]);
         json(['ok'=>true,'exists'=>true,'item'=>prepare_row_out($row,$preparedRoot)]);
     }
     prepare_list($dbFile, $preparedRoot);
@@ -805,6 +819,8 @@ function prepare_row_out_safe(array $r, string $preparedRoot, string $err): arra
         'prepare_key'=>$key,
         'title'=>(string)($r['title'] ?? ''),
         'quality'=>(string)($r['quality'] ?? 'fast'),
+        'audio_track'=>(int)($r['audio_track'] ?? 0),
+        'audio_tracks'=>[],
         'status'=>(string)($r['status'] ?? 'error'),
         'progress'=>(float)($r['progress'] ?? 0),
         'duration'=>(float)($r['duration'] ?? 0),
@@ -842,7 +858,7 @@ function prepare_inspect(string $dbFile, string $preparedRoot): void {
     $pdo = prepare_db($dbFile);
     $limit = max(1, min(50, (int)g('limit','10')));
     $total = (int)$pdo->query('SELECT COUNT(*) FROM prepare_queue')->fetchColumn();
-    $rows = $pdo->query('SELECT id,content_id,prepare_key,title,status,progress,duration,prepared_seconds,segments,pid,worker_pid,attempts,updated_at,error FROM prepare_queue ORDER BY updated_at DESC LIMIT ' . $limit)->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $rows = $pdo->query('SELECT id,content_id,prepare_key,title,status,progress,duration,prepared_seconds,segments,pid,worker_pid,attempts,audio_track,updated_at,error FROM prepare_queue ORDER BY updated_at DESC LIMIT ' . $limit)->fetchAll(PDO::FETCH_ASSOC) ?: [];
     $preparedDirs = [];
     if (is_dir($preparedRoot)) {
         foreach (scandir($preparedRoot) ?: [] as $i) {
@@ -1036,7 +1052,426 @@ function proxy_stream(): void { $u=g('url'); if($u==='' || !preg_match('#^https?
 /**
  * Получает codec/duration через ffprobe и кэширует результат в media_info.json.
  */
-function media_info(string $url,string $dir): array { $cache="$dir/media_info.json"; if(is_file($cache)&&filesize($cache)>0)return read_json($cache); $headers=lampa_sync_ffmpeg_headers(); $cmd='timeout 25s '.escapeshellarg(FFPROBE_BIN).' -v error -headers '.escapeshellarg($headers).' -print_format json -show_format -show_streams '.escapeshellarg($url).' 2>&1'; $raw=(string)@shell_exec($cmd); $pos=strpos($raw,'{'); $data=json_decode($pos!==false?substr($raw,$pos):'',true); if(!is_array($data))$data=['raw'=>$raw,'streams'=>[],'format'=>[]]; $info=['duration'=>0,'video_codec'=>'','video_pix_fmt'=>'','video_width'=>0,'video_height'=>0,'audio_codec'=>'','audio_channels'=>0,'raw'=>$data]; if(!empty($data['format']['duration']))$info['duration']=max(0,(float)$data['format']['duration']); foreach(($data['streams']??[]) as $s){ if(($s['codec_type']??'')==='video' && $info['video_codec']===''){ $info['video_codec']=strtolower((string)($s['codec_name']??'')); $info['video_pix_fmt']=strtolower((string)($s['pix_fmt']??'')); $info['video_width']=(int)($s['width']??0); $info['video_height']=(int)($s['height']??0); if($info['duration']<=0 && !empty($s['duration']))$info['duration']=(float)$s['duration']; } if(($s['codec_type']??'')==='audio' && $info['audio_codec']===''){ $info['audio_codec']=strtolower((string)($s['codec_name']??'')); $info['audio_channels']=(int)($s['channels']??0); }} write_json($cache,$info); return $info; }
+function media_info(string $url,string $dir): array {
+    $cache="$dir/media_info.json";
+    if(is_file($cache)&&filesize($cache)>0)return read_json($cache);
+
+    $headers=lampa_sync_ffmpeg_headers();
+    $cmd='timeout 25s '.escapeshellarg(FFPROBE_BIN).
+        ' -v error'.
+        ' -analyzeduration 100M'.
+        ' -probesize 100M'.
+        ' -headers '.escapeshellarg($headers).
+        ' -print_format json -show_format -show_streams '.escapeshellarg($url).' 2>&1';
+    $raw=(string)@shell_exec($cmd);
+    $pos=strpos($raw,'{');
+    $data=json_decode($pos!==false?substr($raw,$pos):'',true);
+    if(!is_array($data))$data=['raw'=>$raw,'streams'=>[],'format'=>[]];
+
+    $info=[
+        'duration'=>0,
+        'video_codec'=>'',
+        'video_pix_fmt'=>'',
+        'video_width'=>0,
+        'video_height'=>0,
+        'audio_codec'=>'',
+        'audio_channels'=>0,
+        'audio_tracks'=>[],
+        'subtitle_tracks'=>[],
+        'raw'=>$data,
+    ];
+
+    if(!empty($data['format']['duration']))$info['duration']=max(0,(float)$data['format']['duration']);
+
+    $audioIndex=0;
+    foreach(($data['streams']??[]) as $s){
+        if(($s['codec_type']??'')==='video' && $info['video_codec']===''){
+            $info['video_codec']=strtolower((string)($s['codec_name']??''));
+            $info['video_pix_fmt']=strtolower((string)($s['pix_fmt']??''));
+            $info['video_width']=(int)($s['width']??0);
+            $info['video_height']=(int)($s['height']??0);
+            if($info['duration']<=0 && !empty($s['duration']))$info['duration']=(float)$s['duration'];
+        }
+
+        if(($s['codec_type']??'')==='audio'){
+            $tags=is_array($s['tags']??null)?$s['tags']:[];
+            $disp=is_array($s['disposition']??null)?$s['disposition']:[];
+            $track=[
+                'audio_index'=>$audioIndex,
+                'stream_index'=>(int)($s['index']??$audioIndex),
+                'codec'=>strtolower((string)($s['codec_name']??'')),
+                'channels'=>(int)($s['channels']??0),
+                'language'=>strtolower((string)($tags['language']??'')),
+                'title'=>(string)($tags['title']??''),
+                'default'=>!empty($disp['default']),
+            ];
+            $track['label']=audio_track_label($track);
+            $info['audio_tracks'][]=$track;
+
+            if($info['audio_codec']===''){
+                $info['audio_codec']=$track['codec'];
+                $info['audio_channels']=$track['channels'];
+                if($info['duration']<=0 && !empty($s['duration']))$info['duration']=(float)$s['duration'];
+            }
+            $audioIndex++;
+        }
+    }
+
+    $subtitleIndex=0;
+    foreach(($data['streams']??[]) as $s){
+        if(($s['codec_type']??'')==='subtitle'){
+            $tags=is_array($s['tags']??null)?$s['tags']:[];
+            $disp=is_array($s['disposition']??null)?$s['disposition']:[];
+            $track=[
+                'subtitle_index'=>$subtitleIndex,
+                'stream_index'=>(int)($s['index']??$subtitleIndex),
+                'codec'=>strtolower((string)($s['codec_name']??'')),
+                'language'=>strtolower((string)($tags['language']??'')),
+                'title'=>(string)($tags['title']??''),
+                'default'=>!empty($disp['default']),
+                'forced'=>!empty($disp['forced']),
+            ];
+            $track['supported']=subtitle_track_supported($track);
+            $track['label']=subtitle_track_label($track);
+            $info['subtitle_tracks'][]=$track;
+            $subtitleIndex++;
+        }
+    }
+
+    write_json($cache,$info);
+    return $info;
+}
+
+/**
+ * Формирует читаемую подпись аудиодорожки для интерфейса плеера.
+ */
+function audio_track_label(array $track): string {
+    $parts=[];
+    $n=(int)($track['audio_index']??0)+1;
+    $parts[]='Аудио '.$n;
+    if(!empty($track['language']))$parts[]=strtoupper((string)$track['language']);
+    if(!empty($track['title']))$parts[]=(string)$track['title'];
+    if(!empty($track['codec']))$parts[]=strtoupper((string)$track['codec']);
+    if(!empty($track['channels']))$parts[]=(string)$track['channels'].'ch';
+    if(!empty($track['default']))$parts[]='default';
+    return implode(' · ', $parts);
+}
+
+/**
+ * Проверяет, можно ли отдать дорожку субтитров как WebVTT.
+ * Текстовые форматы ffmpeg обычно умеет конвертировать в .vtt.
+ * Bitmap-субтитры вроде PGS/VobSub здесь не поддерживаются: для них нужен burn-in или OCR.
+ */
+function subtitle_track_supported(array $track): bool {
+    $codec = strtolower((string)($track['codec'] ?? ''));
+    return in_array($codec, ['subrip','srt','ass','ssa','webvtt','mov_text','text'], true);
+}
+
+/**
+ * Формирует читаемую подпись субтитров для интерфейса плеера.
+ */
+function subtitle_track_label(array $track): string {
+    $parts=[];
+    $n=(int)($track['subtitle_index']??0)+1;
+    $parts[]='Субтитры '.$n;
+    if(!empty($track['language']))$parts[]=strtoupper((string)$track['language']);
+    if(!empty($track['title']))$parts[]=(string)$track['title'];
+    if(!empty($track['codec']))$parts[]=strtoupper((string)$track['codec']);
+    if(!empty($track['forced']))$parts[]='forced';
+    if(!empty($track['default']))$parts[]='default';
+    if(empty($track['supported']))$parts[]='не webvtt';
+    return implode(' · ', $parts);
+}
+
+/**
+ * Не даёт выбрать несуществующую дорожку субтитров.
+ */
+function normalize_subtitle_track(array $mediaInfo, int $requested): int {
+    $tracks=is_array($mediaInfo['subtitle_tracks']??null)?$mediaInfo['subtitle_tracks']:[];
+    if(!$tracks)return -1;
+    foreach($tracks as $track){
+        if((int)($track['subtitle_index']??-1)===$requested)return $requested;
+    }
+    return -1;
+}
+
+/**
+ * Конвертирует выбранную встроенную дорожку субтитров в WebVTT и отдаёт её браузеру.
+ * Важно: субтитры извлекаются полным проходом от начала файла.
+ * Seek внутри MKV через TorrServer часто ломает demuxer: ffmpeg может получить
+ * байтовый Range не с начала EBML-элемента и упасть с invalid EBML number.
+ */
+
+/**
+ * Проверяет, похож ли готовый файл на валидный WebVTT.
+ * Одного заголовка WEBVTT недостаточно: внутри должна быть хотя бы одна строка времени.
+ */
+function subtitle_vtt_is_valid(string $file): bool {
+    if (!is_file($file) || filesize($file) <= 0) return false;
+    $txt = (string)file_get_contents($file);
+    if (stripos($txt, 'WEBVTT') === false) return false;
+    return strpos($txt, '-->') !== false;
+}
+
+/**
+ * Собирает команду ffmpeg для извлечения одной дорожки субтитров в WebVTT.
+ */
+function subtitle_vtt_build_cmd(string $url, string $map, float $start, string $outFile, string $logFile): string {
+    $headers = lampa_sync_ffmpeg_headers();
+    $parts = [
+        'timeout 240s',
+        escapeshellarg(FFMPEG_BIN),
+        '-y',
+        '-hide_banner',
+        '-nostdin',
+        '-loglevel warning',
+        '-rw_timeout 600000000',
+        '-reconnect 1',
+        '-reconnect_streamed 1',
+        '-reconnect_on_network_error 1',
+        '-reconnect_on_http_error 4xx,5xx',
+        '-reconnect_delay_max 30',
+        '-headers '.escapeshellarg($headers),
+    ];
+
+    /*
+     * Не используем -ss перед входом для субтитров.
+     * На TorrServer/MKV такой seek может приводить к ошибке вида
+     * "invalid as first byte of an EBML number": ffmpeg начинает читать поток
+     * с середины EBML-блока. Поэтому WebVTT создаётся полным проходом с начала,
+     * а player.html сам выбирает локальное или глобальное время для overlay.
+     */
+    // $start намеренно не применяется в ffmpeg-команде: см. комментарий выше.
+
+    /* -fix_sub_duration — input-опция, она должна идти до -i. */
+    $parts[] = '-fix_sub_duration';
+    $parts[] = '-i '.escapeshellarg($url);
+    $parts[] = '-map '.escapeshellarg($map);
+    $parts[] = '-vn';
+    $parts[] = '-an';
+    $parts[] = '-dn';
+    $parts[] = '-c:s webvtt';
+    $parts[] = '-f webvtt';
+    $parts[] = escapeshellarg($outFile);
+
+    return implode(' ', $parts).' > '.escapeshellarg($logFile).' 2>&1';
+}
+
+function subtitle_vtt_pid_running(int $pid): bool {
+    if ($pid <= 0) return false;
+    if (function_exists('posix_kill')) return @posix_kill($pid, 0);
+    $code = 1;
+    @exec('kill -0 '.(int)$pid.' 2>/dev/null', $out, $code);
+    return $code === 0;
+}
+
+function subtitle_vtt_spawn_cmd(string $cmd, string $pidFile, string $statusFile): array {
+    $payload = [
+        'status' => 'processing',
+        'started_at' => time(),
+        'updated_at' => time(),
+    ];
+    write_json($statusFile, $payload);
+
+    $spawn = 'sh -c '.escapeshellarg($cmd).' >/dev/null 2>&1 & echo $!';
+    $out = [];
+    $code = 0;
+    @exec($spawn, $out, $code);
+    $pid = isset($out[0]) ? (int)$out[0] : 0;
+
+    if ($pid > 0) {
+        @file_put_contents($pidFile, (string)$pid);
+        $payload['pid'] = $pid;
+        write_json($statusFile, $payload);
+    }
+
+    return ['ok' => $pid > 0, 'pid' => $pid, 'code' => $code, 'out' => $out];
+}
+
+function subtitle_vtt_attempts_for_track(int $streamIndex, int $track): array {
+    $attempts=[];
+    if($streamIndex>=0)$attempts[]=['name'=>'absolute_stream_index','map'=>'0:'.$streamIndex];
+    $attempts[]=['name'=>'relative_subtitle_index','map'=>'0:s:'.$track];
+    return $attempts;
+}
+
+function subtitle_vtt_start_async(string $nu, int $track, int $streamIndex, float $start, array $info, string $outFile, string $logFile, string $metaFile, string $cmdFile, string $pidFile, string $statusFile): array {
+    $attempts = subtitle_vtt_attempts_for_track($streamIndex, $track);
+    $map = (string)$attempts[0]['map'];
+    $cmd = subtitle_vtt_build_cmd($nu, $map, $start, $outFile, $logFile);
+    @unlink($outFile);
+    @unlink($logFile);
+    @file_put_contents($cmdFile, $cmd);
+
+    write_json($metaFile, [
+        'url'=>$nu,
+        'subtitle_track'=>$track,
+        'stream_index'=>$streamIndex,
+        'requested_start'=>$start,
+        'extraction_mode'=>'full_scan_from_start_no_seek',
+        'created_at'=>time(),
+        'track'=>$info,
+        'attempts'=>[['name'=>$attempts[0]['name'], 'map'=>$map, 'status'=>'spawned_async']],
+    ]);
+
+    return subtitle_vtt_spawn_cmd($cmd, $pidFile, $statusFile);
+}
+
+/**
+ * Конвертирует выбранную встроенную дорожку субтитров в WebVTT и отдаёт её браузеру.
+ *
+ * Важный нюанс: извлечение субтитров из TorrServer-потока может занимать дольше,
+ * чем таймаут nginx/php-fpm. Поэтому endpoint работает асинхронно:
+ * - если subtitle.vtt уже готов, отдаём его сразу;
+ * - если не готов, запускаем ffmpeg в фоне и возвращаем JSON `pending`;
+ * - player.html опрашивает endpoint, пока файл не появится.
+ */
+function subtitle_vtt_endpoint(string $hlsRoot): void {
+    $url=req('url');
+    if($url==='' || !preg_match('#^https?://#i',$url)){http_response_code(400); header('Content-Type: text/plain; charset=utf-8'); echo 'url required'; exit;}
+
+    $track=max(0,(int)req('subtitle_track','0'));
+    $start=max(0,(float)req('start','0'));
+    $debug=req('debug','')==='1';
+    $nu=norm_url($url);
+    $probeDir=session_dir($hlsRoot,'probe_'.substr(sha1($nu),0,16));
+    ensure_dir($probeDir);
+    $mi=media_info($nu,$probeDir);
+    $track=normalize_subtitle_track($mi,$track);
+    if($track<0){http_response_code(404); header('Content-Type: text/plain; charset=utf-8'); echo 'subtitle track not found'; exit;}
+
+    $tracks=is_array($mi['subtitle_tracks']??null)?$mi['subtitle_tracks']:[];
+    $info=null;
+    foreach($tracks as $t){ if((int)($t['subtitle_index']??-1)===$track){$info=$t; break;} }
+    if(!$info || empty($info['supported'])){http_response_code(415); header('Content-Type: text/plain; charset=utf-8'); echo 'subtitle codec is not supported for WebVTT'; exit;}
+
+    $streamIndex=(int)($info['stream_index']??-1);
+    $bucket='sub_'.substr(sha1($nu.'|sub:'.$track.'|stream:'.$streamIndex.'|full-scan-v2'),0,24);
+    $dir=session_dir($hlsRoot,$bucket);
+    ensure_dir($dir);
+    touch_session($dir);
+    $outFile=$dir.'/subtitle.vtt';
+    $logFile=$dir.'/subtitle.log';
+    $metaFile=$dir.'/subtitle_meta.json';
+    $cmdFile=$dir.'/subtitle_cmd.txt';
+    $pidFile=$dir.'/subtitle.pid';
+    $statusFile=$dir.'/subtitle_status.json';
+
+    $pid=is_file($pidFile)?(int)trim((string)file_get_contents($pidFile)):0;
+    $running=subtitle_vtt_pid_running($pid);
+
+    if(!subtitle_vtt_is_valid($outFile) && !$running){
+        /*
+         * Если прошлый ffmpeg уже завершился, но WebVTT не появился, не запускаем
+         * бесконечный цикл на каждом polling-запросе: даём повтор через 30 секунд.
+         */
+        $status=read_json($statusFile);
+        $last=(int)($status['updated_at'] ?? 0);
+        $failedRecently=($last > 0 && time() - $last < 30 && !empty($status['failed']));
+
+        if(!$failedRecently){
+            $spawn=subtitle_vtt_start_async($nu,$track,$streamIndex,$start,$info,$outFile,$logFile,$metaFile,$cmdFile,$pidFile,$statusFile);
+            $pid=(int)($spawn['pid'] ?? 0);
+            $running=$pid>0;
+        }
+    }
+
+    $valid=subtitle_vtt_is_valid($outFile);
+    if(!$valid && !$running && is_file($logFile) && filesize($logFile)>0){
+        $status=read_json($statusFile);
+        $status['status']='failed';
+        $status['failed']=true;
+        $status['updated_at']=time();
+        write_json($statusFile,$status);
+    }
+
+    if($debug){
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([
+            'ok'=>$valid,
+            'pending'=>!$valid && $running,
+            'running'=>$running,
+            'pid'=>$pid,
+            'track'=>$info,
+            'subtitle_track'=>$track,
+            'stream_index'=>$streamIndex,
+            'start'=>$start,
+            'extraction_mode'=>'full_scan_from_start_no_seek',
+            'out_file'=>$outFile,
+            'bytes'=>is_file($outFile)?filesize($outFile):0,
+            'preview'=>is_file($outFile)?substr((string)file_get_contents($outFile),0,1200):'',
+            'log_tail'=>tail_file($logFile,4000),
+            'cmd'=>is_file($cmdFile)?(string)file_get_contents($cmdFile):'',
+            'status'=>read_json($statusFile),
+            'meta'=>read_json($metaFile),
+        ], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
+    if(!$valid){
+        http_response_code($running ? 202 : 500);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([
+            'ok'=>false,
+            'pending'=>$running,
+            'running'=>$running,
+            'pid'=>$pid,
+            'error'=>$running ? 'subtitle conversion is still running' : 'subtitle conversion failed or produced empty WebVTT',
+            'log_tail'=>tail_file($logFile,1200),
+        ], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
+    header('Content-Type: text/vtt; charset=utf-8');
+    header('Cache-Control: public, max-age=86400');
+    readfile($outFile);
+    exit;
+}
+
+function audio_tracks_from_media_cache(string $dir): array {
+    $mi=read_json($dir.'/media_info.json');
+    return is_array($mi['audio_tracks']??null)?$mi['audio_tracks']:[];
+}
+
+/**
+ * Не даёт выбрать несуществующую аудиодорожку.
+ */
+function normalize_audio_track(array $mediaInfo, int $requested): int {
+    $tracks=is_array($mediaInfo['audio_tracks']??null)?$mediaInfo['audio_tracks']:[];
+    if(!$tracks)return 0;
+    $requested=max(0,$requested);
+    foreach($tracks as $track){
+        if((int)($track['audio_index']??-1)===$requested)return $requested;
+    }
+    return (int)($tracks[0]['audio_index']??0);
+}
+
+/**
+ * API для плеера: быстро отдать список аудиодорожек до запуска HLS.
+ */
+function media_info_endpoint(string $hlsRoot): void {
+    $url=req('url');
+    if($url==='')json(['ok'=>false,'error'=>'url required'],400);
+    if(!preg_match('#^https?://#i',$url))json(['ok'=>false,'error'=>'Only http/https stream URLs are supported'],400);
+    $nu=norm_url($url);
+    $dir=session_dir($hlsRoot,'probe_'.substr(sha1($nu),0,16));
+    ensure_dir($dir);
+    touch_session($dir);
+    $mi=media_info($nu,$dir);
+    json([
+        'ok'=>true,
+        'api_version'=>API_VERSION,
+        'source_url'=>$url,
+        'normalized_url'=>$nu,
+        'duration'=>(float)($mi['duration']??0),
+        'video_codec'=>(string)($mi['video_codec']??''),
+        'audio_codec'=>(string)($mi['audio_codec']??''),
+        'audio_channels'=>(int)($mi['audio_channels']??0),
+        'audio_tracks'=>is_array($mi['audio_tracks']??null)?$mi['audio_tracks']:[],
+        'subtitle_tracks'=>is_array($mi['subtitle_tracks']??null)?$mi['subtitle_tracks']:[],
+    ]);
+}
+
 /**
  * Возвращает параметры ffmpeg для совместимого AAC-аудио.
  */
@@ -1142,6 +1577,7 @@ function start_hls(string $root): void {
     $quality=g('quality','fast');
     $start=max(0,(float)g('start','0'));
     $force=g('force','0')==='1';
+    $audioTrack=max(0,(int)g('audio_track','0'));
     $nu=norm_url($url);
     $dir=session_dir($root,$sid);
     ensure_dir($dir);
@@ -1153,9 +1589,10 @@ function start_hls(string $root): void {
     $oldStart=is_file("$dir/offset.txt")?(float)trim((string)file_get_contents("$dir/offset.txt")):-1;
     $oldQuality=is_file("$dir/quality.txt")?trim((string)file_get_contents("$dir/quality.txt")):'';
     $oldApi=is_file("$dir/api_version.txt")?trim((string)file_get_contents("$dir/api_version.txt")):'';
+    $oldAudio=is_file("$dir/audio_track.txt")?(int)trim((string)file_get_contents("$dir/audio_track.txt")):0;
 
     $ready=is_file("$dir/index.m3u8")&&filesize("$dir/index.m3u8")>0&&(count(glob("$dir/*.m4s")?:[])>0||count(glob("$dir/*.ts")?:[])>0);
-    $restart=$force||$oldUrl!==$nu||abs($oldStart-$start)>1||$oldQuality!==$quality||$oldApi!==API_VERSION||(!$run&&!$ready);
+    $restart=$force||$oldUrl!==$nu||abs($oldStart-$start)>1||$oldQuality!==$quality||$oldApi!==API_VERSION||$oldAudio!==$audioTrack||(!$run&&!$ready);
 
     if($restart){
         if($run)kill_pid($pid);
@@ -1164,10 +1601,13 @@ function start_hls(string $root): void {
         file_put_contents("$dir/source_url.txt",$nu);
         file_put_contents("$dir/offset.txt",(string)$start);
         file_put_contents("$dir/quality.txt",$quality);
+        file_put_contents("$dir/audio_track.txt",(string)$audioTrack);
         file_put_contents("$dir/api_version.txt",API_VERSION);
         touch_session($dir);
 
         $mi=media_info($nu,$dir);
+        $audioTrack=normalize_audio_track($mi,$audioTrack);
+        file_put_contents("$dir/audio_track.txt",(string)$audioTrack);
         $enc=encoding($mi,$quality);
         write_json("$dir/encoding.json",$enc);
 
@@ -1193,7 +1633,7 @@ function start_hls(string $root): void {
 
         if($start>0)$parts[]='-ss '.escapeshellarg((string)$start);
         $parts[]='-i '.escapeshellarg($nu);
-        array_push($parts,'-map 0:v:0','-map 0:a:0?','-sn','-dn');
+        array_push($parts,'-map 0:v:0','-map 0:a:'.$audioTrack.'?','-sn','-dn');
         foreach($enc['video_args'] as $a)$parts[]=$a;
         foreach($enc['audio_args'] as $a)$parts[]=$a;
 
@@ -1273,7 +1713,7 @@ function hls_status(string $root,?string $forced=null): void {
     $mi=read_json("$dir/media_info.json");
     $enc=read_json("$dir/encoding.json");
     $src=is_file("$dir/source_url.txt")?trim((string)file_get_contents("$dir/source_url.txt")):'';
-    json(['ok'=>true,'api_version'=>API_VERSION,'sid'=>$sid,'running'=>$run,'ready'=>$ready,'playlist_exists'=>$plExists,'playlist_size'=>$plSize,'segments'=>$segments,'offset'=>$offset,'duration'=>(float)($mi['duration']??0),'prepared_seconds'=>$prep,'prepared_until'=>$offset+$prep,'source_url'=>$src,'contains_preload'=>str_contains($src,'preload'),'contains_play'=>str_contains($src,'play'),'encoding'=>$enc,'media'=>['video_codec'=>$mi['video_codec']??'','video_pix_fmt'=>$mi['video_pix_fmt']??'','video_width'=>$mi['video_width']??0,'video_height'=>$mi['video_height']??0,'audio_codec'=>$mi['audio_codec']??'','audio_channels'=>$mi['audio_channels']??0],'last_log'=>tail_file("$dir/ffmpeg.log",4000),'hls_url'=>lampa_sync_api_url(['hls'=>'1','sid'=>$sid,'file'=>'index.m3u8'])]);
+    json(['ok'=>true,'api_version'=>API_VERSION,'sid'=>$sid,'running'=>$run,'ready'=>$ready,'playlist_exists'=>$plExists,'playlist_size'=>$plSize,'segments'=>$segments,'offset'=>$offset,'duration'=>(float)($mi['duration']??0),'prepared_seconds'=>$prep,'prepared_until'=>$offset+$prep,'source_url'=>$src,'audio_track'=>(int)(is_file("$dir/audio_track.txt")?trim((string)file_get_contents("$dir/audio_track.txt")):0),'audio_tracks'=>is_array($mi['audio_tracks']??null)?$mi['audio_tracks']:[],'subtitle_tracks'=>is_array($mi['subtitle_tracks']??null)?$mi['subtitle_tracks']:[],'contains_preload'=>str_contains($src,'preload'),'contains_play'=>str_contains($src,'play'),'encoding'=>$enc,'media'=>['video_codec'=>$mi['video_codec']??'','video_pix_fmt'=>$mi['video_pix_fmt']??'','video_width'=>$mi['video_width']??0,'video_height'=>$mi['video_height']??0,'audio_codec'=>$mi['audio_codec']??'','audio_channels'=>$mi['audio_channels']??0,'audio_tracks'=>is_array($mi['audio_tracks']??null)?$mi['audio_tracks']:[],'subtitle_tracks'=>is_array($mi['subtitle_tracks']??null)?$mi['subtitle_tracks']:[]],'last_log'=>tail_file("$dir/ffmpeg.log",4000),'hls_url'=>lampa_sync_api_url(['hls'=>'1','sid'=>$sid,'file'=>'index.m3u8'])]);
 }
 
 /**
@@ -1352,15 +1792,32 @@ function progress_api(string $dir): void {
 
     if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $cid = trim((string)($_GET['content_id'] ?? ''));
+        $ids = progress_ids_from_request($cid, (string)($_GET['content_ids'] ?? ''));
 
-        if ($cid === '') {
+        if ($cid === '' && !$ids) {
+            if (g('progress_debug') === '1') {
+                $st = $pdo->query('SELECT content_id,title,position,duration,percent,ended,device_id,updated_at,created_at FROM progress ORDER BY updated_at DESC LIMIT 100');
+                json(['ok'=>true,'api_version'=>API_VERSION,'items'=>$st->fetchAll(PDO::FETCH_ASSOC)]);
+            }
+
             $st = $pdo->query('SELECT * FROM progress ORDER BY updated_at DESC');
             json($st->fetchAll(PDO::FETCH_ASSOC));
         }
 
-        $st = $pdo->prepare('SELECT * FROM progress WHERE content_id = :id LIMIT 1');
-        $st->execute(['id' => $cid]);
-        json($st->fetch(PDO::FETCH_ASSOC) ?: null);
+        if (g('progress_debug') === '1') {
+            $rows = progress_rows_by_ids($pdo, $ids);
+            json([
+                'ok'=>true,
+                'api_version'=>API_VERSION,
+                'requested_content_id'=>$cid,
+                'requested_ids'=>$ids,
+                'rows'=>$rows,
+                'selected'=>select_best_progress_row($rows, $ids),
+            ]);
+        }
+
+        $rows = progress_rows_by_ids($pdo, $ids);
+        json(select_best_progress_row($rows, $ids));
     }
 
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -1370,6 +1827,7 @@ function progress_api(string $dir): void {
         if (!is_array($d)) json(['error' => 'Invalid JSON', 'raw' => $raw], 400);
 
         $cid = trim((string)($d['content_id'] ?? ''));
+        if ($cid === '') $cid = trim((string)($d['progress_content_id'] ?? ''));
         if ($cid === '') json(['error' => 'content_id required'], 400);
 
         $pos = max(0, (float)($d['position'] ?? 0));
@@ -1378,6 +1836,7 @@ function progress_api(string $dir): void {
         $ended = !empty($d['ended']) ? 1 : 0;
         $upd = (int)($d['updated_at'] ?? round(microtime(true) * 1000));
         $now = (int)round(microtime(true) * 1000);
+        $device = (string)($d['device_id'] ?? '');
 
         $st = $pdo->prepare('SELECT * FROM progress WHERE content_id = :id LIMIT 1');
         $st->execute(['id' => $cid]);
@@ -1387,23 +1846,30 @@ function progress_api(string $dir): void {
             $oldPct = (int)($old['percent'] ?? 0);
             $oldPos = (float)($old['position'] ?? 0);
             $oldEnded = (int)($old['ended'] ?? 0);
+            $oldDevice = (string)($old['device_id'] ?? '');
+            $oldUpdated = (int)($old['updated_at'] ?? 0);
 
             /*
-             * Prevent an idle/stale device from rewinding the central progress row.
-             * Newer timestamp is not enough: the user may open an old page later.
+             * Защита от старых вкладок/устройств остаётся, но она больше не должна
+             * блокировать нормальный просмотр того же устройства. Раньше общий
+             * content_id мог заставить API считать новый фильм “откатом назад”.
              */
             $incomingBehind = $pct < $oldPct || ($pct === $oldPct && $pos < $oldPos - 3);
+            $sameDevice = $device !== '' && $oldDevice !== '' && hash_equals($oldDevice, $device);
 
-            if ($incomingBehind && !$ended && $oldEnded) {
+            if ($incomingBehind && !$ended && !$sameDevice && $oldEnded) {
+                progress_log($dir, 'post_skip', ['content_id'=>$cid,'reason'=>'old_ended_progress_is_newer','pos'=>$pos,'old_pos'=>$oldPos,'device'=>$device,'old_device'=>$oldDevice]);
                 json(['ok' => true, 'skipped' => true, 'reason' => 'old_ended_progress_is_newer']);
             }
 
-            if ($incomingBehind && !$ended) {
-                json(['ok' => true, 'skipped' => true, 'reason' => 'incoming_progress_is_behind']);
+            if ($incomingBehind && !$ended && !$sameDevice && ($now - $oldUpdated) < 15 * 60 * 1000) {
+                progress_log($dir, 'post_skip', ['content_id'=>$cid,'reason'=>'incoming_progress_is_behind_recent_other_device','pos'=>$pos,'old_pos'=>$oldPos,'device'=>$device,'old_device'=>$oldDevice]);
+                json(['ok' => true, 'skipped' => true, 'reason' => 'incoming_progress_is_behind_recent_other_device']);
             }
 
-            if ((int)$old['updated_at'] > $upd && !$ended) {
-                json(['ok' => true, 'skipped' => true, 'reason' => 'incoming_timestamp_is_older']);
+            if ($oldUpdated > $upd && !$ended && !$sameDevice && ($now - $oldUpdated) < 15 * 60 * 1000) {
+                progress_log($dir, 'post_skip', ['content_id'=>$cid,'reason'=>'incoming_timestamp_is_older_recent_other_device','pos'=>$pos,'old_pos'=>$oldPos,'device'=>$device,'old_device'=>$oldDevice]);
+                json(['ok' => true, 'skipped' => true, 'reason' => 'incoming_timestamp_is_older_recent_other_device']);
             }
 
             $st = $pdo->prepare('UPDATE progress SET title=:title,url=:url,position=:pos,duration=:dur,percent=:pct,ended=:ended,device_id=:dev,updated_at=:upd WHERE content_id=:id');
@@ -1415,7 +1881,7 @@ function progress_api(string $dir): void {
                 'dur' => $dur,
                 'pct' => $pct,
                 'ended' => $ended,
-                'dev' => (string)($d['device_id'] ?? ''),
+                'dev' => $device,
                 'upd' => max($upd, $now),
             ]);
         } else {
@@ -1428,14 +1894,77 @@ function progress_api(string $dir): void {
                 'dur' => $dur,
                 'pct' => $pct,
                 'ended' => $ended,
-                'dev' => (string)($d['device_id'] ?? ''),
+                'dev' => $device,
                 'upd' => max($upd, $now),
                 'created' => $now,
             ]);
         }
 
+        progress_log($dir, 'post_ok', ['content_id'=>$cid,'position'=>$pos,'duration'=>$dur,'percent'=>$pct,'ended'=>$ended,'device'=>$device]);
         json(['ok' => true, 'content_id' => $cid, 'position' => $pos, 'duration' => $dur, 'percent' => $pct]);
     }
 
     json(['error' => 'Method not allowed'], 405);
+}
+
+function progress_ids_from_request(string $cid, string $idsRaw): array {
+    $ids = [];
+
+    if ($cid !== '') $ids[] = $cid;
+
+    if ($idsRaw !== '') {
+        foreach (explode(',', $idsRaw) as $id) {
+            $id = trim((string)$id);
+            if ($id !== '') $ids[] = $id;
+        }
+    }
+
+    $out = [];
+    foreach ($ids as $id) {
+        $id = trim((string)$id);
+        if ($id === '' || in_array($id, $out, true)) continue;
+        $out[] = $id;
+    }
+
+    return array_slice($out, 0, 20);
+}
+
+function progress_rows_by_ids(PDO $pdo, array $ids): array {
+    if (!$ids) return [];
+
+    $ph = [];
+    $params = [];
+    foreach ($ids as $i => $id) {
+        $k = ':id' . $i;
+        $ph[] = $k;
+        $params[$k] = $id;
+    }
+
+    $st = $pdo->prepare('SELECT * FROM progress WHERE content_id IN (' . implode(',', $ph) . ')');
+    $st->execute($params);
+    return $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
+function select_best_progress_row(array $rows, array $ids): ?array {
+    if (!$rows) return null;
+
+    $priority = [];
+    foreach ($ids as $i => $id) $priority[$id] = $i;
+
+    usort($rows, function(array $a, array $b) use ($priority): int {
+        $pa = $priority[(string)($a['content_id'] ?? '')] ?? 9999;
+        $pb = $priority[(string)($b['content_id'] ?? '')] ?? 9999;
+
+        if ($pa !== $pb) return $pa <=> $pb;
+
+        $ua = (int)($a['updated_at'] ?? 0);
+        $ub = (int)($b['updated_at'] ?? 0);
+        return $ub <=> $ua;
+    });
+
+    return $rows[0] ?: null;
+}
+
+function progress_log(string $dir, string $event, array $data=[]): void {
+    @file_put_contents($dir . '/progress_api.log', json_encode(['time'=>date('c'), 'event'=>$event] + $data, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES) . "\n", FILE_APPEND);
 }
