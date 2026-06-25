@@ -9,7 +9,7 @@ ini_set('log_errors', '1');
 // Подключаем локальные настройки: домен, TorrServer, пути к ffmpeg и рабочую директорию.
 require_once __DIR__ . '/bootstrap.php';
 
-if (!defined('API_VERSION')) define('API_VERSION', 'v1.0.7-progress-stream-id-write-fix');
+if (!defined('API_VERSION')) define('API_VERSION', 'v1.0.9-ultra-quality-preset');
 
 
 // Основные рабочие директории и SQLite-база очереди подготовки.
@@ -1548,13 +1548,18 @@ function encoding(array $m,string $quality): array {
         $w=1280; $preset='veryfast'; $crf='25'; $thr='2'; $ab='160k'; $cpu='medium';
     } elseif($quality==='safe'){
         $w=1280; $preset='veryfast'; $crf='24'; $thr='2'; $ab='160k'; $cpu='safe_medium';
+    } elseif($quality==='ultra'){
+        // Very high quality: CRF 18, up to FullHD, never upscale above source width.
+        $w=1920; $preset='veryfast'; $crf='18'; $thr='2'; $ab='192k'; $cpu='ultra_high_quality_heavy';
     } else {
         // fast: good default for 2 CPU cores. For many 720p anime files this keeps acceptable quality.
         $w=960; $preset='ultrafast'; $crf='29'; $thr='1'; $ab='128k'; $cpu='syncsafe_low_medium';
     }
 
+    $profileName = $quality === 'ultra' ? 'ultra_quality_fmp4' : ($quality === 'safe' ? 'safe_full_transcode_fmp4' : 'syncsafe_fmp4');
+
     return [
-        'name'=>$quality==='safe'?'safe_full_transcode_fmp4':'syncsafe_fmp4',
+        'name'=>$profileName,
         'description'=>'sync-safe H.264/AAC-LC fMP4: regenerate video/audio timestamps together to prevent A/V desync',
         'video_args'=>video_syncsafe_args($w, $preset, $crf, $thr),
         'audio_args'=>audio_browser_args($ab, true),

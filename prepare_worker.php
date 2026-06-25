@@ -8,7 +8,7 @@ ini_set('log_errors', '1');
 // Worker использует тот же config.php, что и web API.
 require_once __DIR__ . '/bootstrap.php';
 
-if (!defined('API_VERSION')) define('API_VERSION', 'v1.0.0-public');
+if (!defined('API_VERSION')) define('API_VERSION', 'v1.0.9-ultra-quality-preset');
 
 $DATA_DIR = LAMPA_SYNC_DATA_DIR;
 $PREPARED_DIR = $DATA_DIR . '/prepared';
@@ -794,6 +794,8 @@ function encoding(array $m,string $quality): array {
     if($quality==='lowcpu'){ $w=854; $preset='ultrafast'; $crf='31'; $thr='1'; $ab='112k'; $cpu='low_controlled'; }
     elseif($quality==='balanced'){ $w=1280; $preset='veryfast'; $crf='25'; $thr='2'; $ab='160k'; $cpu='medium'; }
     elseif($quality==='safe'){ $w=1280; $preset='veryfast'; $crf='24'; $thr='2'; $ab='160k'; $cpu='safe_medium'; }
+    elseif($quality==='ultra'){ $w=1920; $preset='veryfast'; $crf='18'; $thr='2'; $ab='192k'; $cpu='ultra_high_quality_heavy'; }
     else { $w=960; $preset='ultrafast'; $crf='29'; $thr='1'; $ab='128k'; $cpu='syncsafe_low_medium'; }
-    return ['name'=>$quality==='safe'?'safe_full_transcode_fmp4':'syncsafe_fmp4','description'=>'prepared sync-safe H.264/AAC-LC fMP4','video_args'=>video_syncsafe_args($w,$preset,$crf,$thr),'audio_args'=>audio_browser_args($ab,true),'segment_type'=>'fmp4','preserve_timestamps'=>false,'cpu_level'=>$cpu,'source_video_was_browser_safe_h264'=>$safeH264];
+    $profileName = $quality === 'ultra' ? 'ultra_quality_fmp4' : ($quality === 'safe' ? 'safe_full_transcode_fmp4' : 'syncsafe_fmp4');
+    return ['name'=>$profileName,'description'=>'prepared sync-safe H.264/AAC-LC fMP4','video_args'=>video_syncsafe_args($w,$preset,$crf,$thr),'audio_args'=>audio_browser_args($ab,true),'segment_type'=>'fmp4','preserve_timestamps'=>false,'cpu_level'=>$cpu,'source_video_was_browser_safe_h264'=>$safeH264];
 }

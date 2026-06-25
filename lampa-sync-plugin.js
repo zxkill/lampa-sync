@@ -24,13 +24,21 @@
   // URL строятся относительно самого JS-файла, чтобы плагин не был привязан к конкретному домену.
   const PLAYER_URL = (window.LAMPA_SYNC_CONFIG && window.LAMPA_SYNC_CONFIG.playerUrl) || joinBase(PLUGIN_BASE_URL, 'player.html');
   const PREPARE_API_URL = (window.LAMPA_SYNC_CONFIG && window.LAMPA_SYNC_CONFIG.apiUrl) || joinBase(PLUGIN_BASE_URL, 'api.php');
-  const QUALITY = (window.LAMPA_SYNC_CONFIG && window.LAMPA_SYNC_CONFIG.quality) || 'fast'; // lowcpu | fast | balanced | safe
+  const DEFAULT_QUALITY = (window.LAMPA_SYNC_CONFIG && window.LAMPA_SYNC_CONFIG.quality) || 'balanced'; // lowcpu | fast | balanced | safe | ultra
 
   const STORAGE_SYNC_API_URL = (window.LAMPA_SYNC_CONFIG && window.LAMPA_SYNC_CONFIG.progressApiUrl) || joinBase(PLUGIN_BASE_URL, 'progress.php');
 
   const STORAGE_SYNC_PLUGIN_ID = 'lampa_sync_storage';
   const STORAGE_SYNC_META_KEY = 'lampa_sync_storage_meta_v2';
   const STORAGE_SYNC_DEVICE_KEY = 'lampa_sync_storage_device_id';
+  const QUALITY_SETTING_KEY = STORAGE_SYNC_PLUGIN_ID + '_quality';
+  const QUALITY_PRESETS = {
+    lowcpu: 'Экономия CPU / ниже качество',
+    fast: 'Быстро / нормальное качество',
+    balanced: 'Хорошее качество',
+    safe: 'Максимальное качество / тяжелее',
+    ultra: 'Ultra / CRF 18 / до FullHD'
+  };
 
 
   // Настройки синхронизации состояния Lampa через progress.php.
@@ -197,7 +205,7 @@
         '&progress_content_id=' + encodeURIComponent(progressContentId) +
         '&progress_alt_ids=' + encodeURIComponent(progressAltIds.join(',')) +
         '&transcode=1' +
-        '&quality=' + encodeURIComponent(QUALITY) +
+        '&quality=' + encodeURIComponent(getQualityPreset()) +
         '&v=' + Date.now();
 
       openOverlay(playerUrl, title);
@@ -597,7 +605,7 @@
       const api =
         PREPARE_API_URL +
         '?prepare_start=1' +
-        '&quality=' + encodeURIComponent(QUALITY) +
+        '&quality=' + encodeURIComponent(getQualityPreset()) +
         '&title=' + encodeURIComponent(title) +
         '&url=' + encodeURIComponent(url) +
         '&t=' + Date.now();
@@ -950,7 +958,7 @@
       '&progress_alt_ids=' + encodeURIComponent(progressAltIds.join(',')) +
       '&transcode=1' +
       '&prepared=1' +
-      '&quality=' + encodeURIComponent(QUALITY) +
+      '&quality=' + encodeURIComponent(getQualityPreset()) +
       '&v=' + Date.now();
 
     openOverlay(playerUrl, title);
@@ -1949,59 +1957,140 @@
   let pushInFlight = false;
   let applyingRemote = false;
   let storageHookInstalled = false;
+  let settingsInstallRetryTimer = null;
+  let settingsInstalled = false;
 
   // Добавляет настройки плагина в меню Lampa, если API настроек доступен.
   function installSettings() {
+    /*
+     * В Lampa SettingsApi параметры должны идти в формате
+     * { component, param:{...}, field:{...}, onChange }.
+     * Такой формат реально отображается в меню настроек Lampa.
+     */
+    if (settingsInstalled) return;
+
     try {
-      if (!Lampa.SettingsApi || !Lampa.SettingsApi.addComponent) return;
+      if (!window.Lampa || !Lampa.SettingsApi || !Lampa.SettingsApi.addComponent || !Lampa.SettingsApi.addParam) {
+        scheduleSettingsInstallRetry();
+        return;
+      }
+
+      const icon = '<svg width="220" height="220" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 3v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 18v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M3 12h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M18 12h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M7.05 7.05l2.12 2.12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M14.83 14.83l2.12 2.12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M16.95 7.05l-2.12 2.12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M9.17 14.83l-2.12 2.12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="3.5" stroke="currentColor" stroke-width="2"/></svg>';
 
       Lampa.SettingsApi.addComponent({
         component: STORAGE_SYNC_PLUGIN_ID,
-        name: 'Lampa Sync'
+        name: 'Lampa Sync',
+        icon: icon
       });
 
-      Lampa.SettingsApi.addParam({
-        component: STORAGE_SYNC_PLUGIN_ID,
-        param: 'enabled',
-        type: 'toggle',
-        name: 'Синхронизация Lampa localStorage',
-        default: true
-      }, function (v) {
-        try { Lampa.Storage.set(STORAGE_SYNC_PLUGIN_ID + '_enabled', !!v); } catch (e) {}
-      });
-
-      Lampa.SettingsApi.addParam({
-        component: STORAGE_SYNC_PLUGIN_ID,
-        param: 'api',
-        type: 'input',
-        name: 'URL sync API',
-        default: STORAGE_SYNC_API_URL
-      }, function (v) {
-        if (typeof v === 'string' && v.trim()) {
-          try { Lampa.Storage.set(STORAGE_SYNC_PLUGIN_ID + '_api', v.trim()); } catch (e) {}
+      addSettingsParam({
+        name: STORAGE_SYNC_PLUGIN_ID + '_enabled',
+        type: 'trigger',
+        defaultValue: true,
+        title: 'Включить синхронизацию',
+        description: 'Синхронизация прогресса, истории и состояния Lampa между устройствами.',
+        onChange: function (value) {
+          try { Lampa.Storage.set(STORAGE_SYNC_PLUGIN_ID + '_enabled', !!value); } catch (e) {}
         }
       });
 
-      Lampa.SettingsApi.addParam({
-        component: STORAGE_SYNC_PLUGIN_ID,
-        param: 'extra_keys',
-        type: 'input',
-        name: 'Дополнительные ключи localStorage через запятую',
-        default: ''
-      }, function (v) {
-        try { Lampa.Storage.set(SYNC_ADDITIONAL_KEYS_SETTING, String(v || '').trim()); } catch (e) {}
+      addSettingsParam({
+        name: QUALITY_SETTING_KEY,
+        type: 'select',
+        values: QUALITY_PRESETS,
+        defaultValue: normalizeQuality(DEFAULT_QUALITY),
+        title: 'Качество конвертации',
+        description: 'Профиль FFmpeg для онлайн-просмотра и подготовки через меню Lampa. По умолчанию — хорошее качество.',
+        onChange: function (value) {
+          try { Lampa.Storage.set(QUALITY_SETTING_KEY, normalizeQuality(value)); } catch (e) {}
+        }
       });
 
-      Lampa.SettingsApi.addParam({
-        component: STORAGE_SYNC_PLUGIN_ID,
-        param: 'log',
-        type: 'toggle',
-        name: 'Логи Lampa Sync в консоль',
-        default: false
-      }, function (v) {
-        try { Lampa.Storage.set(STORAGE_SYNC_PLUGIN_ID + '_log', !!v); } catch (e) {}
+      addSettingsParam({
+        name: STORAGE_SYNC_PLUGIN_ID + '_api',
+        type: 'input',
+        defaultValue: STORAGE_SYNC_API_URL,
+        title: 'URL sync API',
+        description: 'Адрес progress.php. Обычно заполняется автоматически от URL плагина.',
+        placeholder: STORAGE_SYNC_API_URL,
+        onChange: function (value) {
+          const v = String(value || '').trim();
+          if (v) {
+            try { Lampa.Storage.set(STORAGE_SYNC_PLUGIN_ID + '_api', v); } catch (e) {}
+          }
+        }
       });
-    } catch (e) {}
+
+      addSettingsParam({
+        name: SYNC_ADDITIONAL_KEYS_SETTING,
+        type: 'input',
+        defaultValue: '',
+        title: 'Дополнительные ключи localStorage',
+        description: 'Через запятую. Обычно оставлять пустым.',
+        placeholder: 'key1,key2,key3',
+        onChange: function (value) {
+          try { Lampa.Storage.set(SYNC_ADDITIONAL_KEYS_SETTING, String(value || '').trim()); } catch (e) {}
+        }
+      });
+
+      addSettingsParam({
+        name: STORAGE_SYNC_PLUGIN_ID + '_log',
+        type: 'trigger',
+        defaultValue: false,
+        title: 'Логи в консоль',
+        description: 'Включать только для отладки синхронизации.',
+        onChange: function (value) {
+          try { Lampa.Storage.set(STORAGE_SYNC_PLUGIN_ID + '_log', !!value); } catch (e) {}
+        }
+      });
+
+      settingsInstalled = true;
+      console.log('[Lampa Sync] settings registered');
+    } catch (e) {
+      console.warn('[Lampa Sync] settings registration failed:', e);
+      scheduleSettingsInstallRetry();
+    }
+  }
+
+  // Повторяет регистрацию настроек, если SettingsApi ещё не готов в момент старта плагина.
+  function scheduleSettingsInstallRetry() {
+    if (settingsInstalled || settingsInstallRetryTimer) return;
+
+    settingsInstallRetryTimer = setTimeout(function () {
+      settingsInstallRetryTimer = null;
+      installSettings();
+    }, 1000);
+  }
+
+  // Регистрирует один параметр в формате, который реально отображается в меню Lampa.
+  function addSettingsParam(options) {
+    Lampa.SettingsApi.addParam({
+      component: STORAGE_SYNC_PLUGIN_ID,
+      param: {
+        name: options.name,
+        type: options.type,
+        values: options.values || '',
+        placeholder: options.placeholder || '',
+        default: options.defaultValue
+      },
+      field: {
+        name: options.title,
+        description: options.description || ''
+      },
+      onChange: options.onChange || function () {}
+    });
+  }
+
+  // Приводит значение качества к одному из поддерживаемых backend-профилей.
+  function normalizeQuality(value) {
+    const q = String(value || '').trim();
+    return Object.prototype.hasOwnProperty.call(QUALITY_PRESETS, q) ? q : 'balanced';
+  }
+
+  // Возвращает выбранный профиль качества из настроек плагина.
+  function getQualityPreset() {
+    try { return normalizeQuality(Lampa.Storage.get(QUALITY_SETTING_KEY, normalizeQuality(DEFAULT_QUALITY))); }
+    catch (e) { return normalizeQuality(DEFAULT_QUALITY); }
   }
 
   // Возвращает URL progress.php из настроек плагина.
