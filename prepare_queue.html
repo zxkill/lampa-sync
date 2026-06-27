@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>Lampa Sync Queue</title>
   <style>
-    :root{--bg:#09090b;--panel:rgba(255,255,255,.075);--line:rgba(255,255,255,.14);--muted:rgba(255,255,255,.62);--ok:#8ff0b0;--warn:#ffe08a;--bad:#ff9c9c;--accent:#7c5cff;--blue:#22d3ee}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,rgba(124,92,255,.25),transparent 34%),var(--bg);color:#fff;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;padding:18px}header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}h1{font-size:22px;margin:0}.toolbar{display:flex;gap:8px;flex-wrap:wrap}.btn{border:1px solid var(--line);background:rgba(0,0,0,.35);color:#fff;border-radius:14px;padding:10px 14px;cursor:pointer;text-decoration:none}.btn:hover{background:rgba(255,255,255,.08)}.btn.bad{border-color:rgba(255,156,156,.35);color:var(--bad)}.btn.ok{border-color:rgba(143,240,176,.35);color:var(--ok)}.btn.warn{border-color:rgba(255,224,138,.35);color:var(--warn)}.panel{border:1px solid var(--line);background:var(--panel);border-radius:18px;padding:14px;margin-bottom:14px}.add{display:grid;grid-template-columns:1fr auto;gap:10px}input,select{width:100%;border:1px solid var(--line);background:rgba(0,0,0,.35);color:#fff;border-radius:14px;padding:12px 13px;font:inherit}select{max-width:160px}.hint{color:var(--muted);font-size:12px;margin-top:8px;line-height:1.45}.list{display:grid;gap:12px}.item{border:1px solid var(--line);background:var(--panel);border-radius:18px;padding:14px}.top{display:flex;gap:12px;align-items:flex-start;justify-content:space-between}.title{font-weight:800;line-height:1.25;overflow:hidden;text-overflow:ellipsis}.meta{margin-top:7px;color:var(--muted);font-size:13px;display:flex;gap:8px;flex-wrap:wrap}.pill{border:1px solid var(--line);border-radius:999px;padding:3px 8px}.queued,.processing,.retry{color:var(--warn)}.ready{color:var(--ok)}.error,.stalled{color:var(--bad)}.bar{margin-top:12px;height:8px;background:rgba(255,255,255,.14);border-radius:99px;overflow:hidden}.fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--blue))}pre{white-space:pre-wrap;max-height:140px;overflow:auto;color:#ddd;background:rgba(0,0,0,.25);border-radius:12px;padding:10px;font-size:12px}.empty{color:var(--muted);text-align:center;padding:30px}.actions{display:flex;gap:8px;flex-wrap:wrap}.small{font-size:12px;color:var(--muted);margin-top:8px;overflow-wrap:anywhere}.msg{margin-top:10px;color:var(--muted);font-size:13px}.msg.ok{color:var(--ok)}.msg.bad{color:var(--bad)}@media(max-width:720px){body{padding:12px}header{display:block}.toolbar{margin-top:12px}.top{display:block}.actions{margin-top:12px}.btn,.add button{width:100%}.add{grid-template-columns:1fr}select{max-width:none}}
+    :root{--bg:#09090b;--panel:rgba(255,255,255,.075);--line:rgba(255,255,255,.14);--muted:rgba(255,255,255,.62);--ok:#8ff0b0;--warn:#ffe08a;--bad:#ff9c9c;--accent:#7c5cff;--blue:#22d3ee}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,rgba(124,92,255,.25),transparent 34%),var(--bg);color:#fff;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;padding:18px}header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}h1{font-size:22px;margin:0}.toolbar{display:flex;gap:8px;flex-wrap:wrap}.btn{border:1px solid var(--line);background:rgba(0,0,0,.35);color:#fff;border-radius:14px;padding:10px 14px;cursor:pointer;text-decoration:none}.btn:hover{background:rgba(255,255,255,.08)}.btn.bad{border-color:rgba(255,156,156,.35);color:var(--bad)}.btn.ok{border-color:rgba(143,240,176,.35);color:var(--ok)}.btn.play{border-color:rgba(34,211,238,.45);color:#d8fbff;background:linear-gradient(135deg,rgba(124,92,255,.34),rgba(34,211,238,.18));font-weight:800}.btn.play:hover{background:linear-gradient(135deg,rgba(124,92,255,.48),rgba(34,211,238,.28))}.btn.warn{border-color:rgba(255,224,138,.35);color:var(--warn)}.panel{border:1px solid var(--line);background:var(--panel);border-radius:18px;padding:14px;margin-bottom:14px}.add{display:grid;grid-template-columns:1fr auto;gap:10px}input,select{width:100%;border:1px solid var(--line);background:rgba(0,0,0,.35);color:#fff;border-radius:14px;padding:12px 13px;font:inherit}select{max-width:160px}.hint{color:var(--muted);font-size:12px;margin-top:8px;line-height:1.45}.list{display:grid;gap:12px}.item{border:1px solid var(--line);background:var(--panel);border-radius:18px;padding:14px}.top{display:flex;gap:12px;align-items:flex-start;justify-content:space-between}.title{font-weight:800;line-height:1.25;overflow:hidden;text-overflow:ellipsis}.meta{margin-top:7px;color:var(--muted);font-size:13px;display:flex;gap:8px;flex-wrap:wrap}.pill{border:1px solid var(--line);border-radius:999px;padding:3px 8px}.queued,.processing,.retry{color:var(--warn)}.ready{color:var(--ok)}.error,.stalled{color:var(--bad)}.bar{margin-top:12px;height:8px;background:rgba(255,255,255,.14);border-radius:99px;overflow:hidden}.fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--blue))}pre{white-space:pre-wrap;max-height:140px;overflow:auto;color:#ddd;background:rgba(0,0,0,.25);border-radius:12px;padding:10px;font-size:12px}.empty{color:var(--muted);text-align:center;padding:30px}.actions{display:flex;gap:8px;flex-wrap:wrap}.small{font-size:12px;color:var(--muted);margin-top:8px;overflow-wrap:anywhere}.msg{margin-top:10px;color:var(--muted);font-size:13px}.msg.ok{color:var(--ok)}.msg.bad{color:var(--bad)}@media(max-width:720px){body{padding:12px}header{display:block}.toolbar{margin-top:12px}.top{display:block}.actions{margin-top:12px}.btn,.add button{width:100%}.add{grid-template-columns:1fr}select{max-width:none}}
   </style>
 </head>
 <body>
@@ -24,6 +24,7 @@
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <select id="quality" title="Качество подготовки">
         <option value="fast">fast</option>
+        <option value="copy">copy TS / remux</option>
         <option value="lowcpu">lowcpu</option>
         <option value="balanced">balanced</option>
         <option value="safe">safe</option>
@@ -38,7 +39,7 @@
       <button class="btn ok" id="addBtn">Добавить</button>
     </div>
   </div>
-  <div class="hint">Можно вставить прямую ссылку на поток TorrServer или ссылку на наш player.html. Задача попадёт в очередь, worker сам запустится в фоне. Если у видео несколько дорожек, выбери номер аудио: 1 — первая дорожка, 2 — вторая и т.д.</div>
+  <div class="hint">Можно вставить прямую ссылку на поток TorrServer или ссылку на наш player.html. Задача попадёт в очередь, worker сам запустится в фоне. Если у видео несколько дорожек, выбери номер аудио: 1 — первая дорожка, 2 — вторая и т.д. Для полностью готовых задач появится кнопка «▶ Смотреть», которая откроет наш плеер в новой вкладке, сохранит общий прогресс и зеркально обновит file_view для Lampa. Профиль copy TS/remux копирует видео и выбранную аудиодорожку без пережатия в MPEG-TS HLS. Это быстрее и сохраняет исходное качество, но совместимость зависит от кодеков и устройства.</div>
   <div id="msg" class="msg"></div>
 </div>
 
@@ -47,6 +48,8 @@
 <!-- Логика страницы очереди: добавление ссылок, список задач, retry/delete и запуск worker-а. -->
 <script>
 const API = new URL('api.php', window.location.href).toString();
+const PLAYER = new URL('player.html', window.location.href).toString();
+let itemsByContentId = {};
 const list=document.getElementById('list');
 const msg=document.getElementById('msg');
 document.getElementById('refresh').onclick=load;
@@ -84,6 +87,29 @@ async function add(){
 async function kick(){show('Запускаю worker...');try{const d=await api(API+'?prepare_kick=1&t='+Date.now());show(d.ok?'Worker запущен / уже проверяется.':'Не удалось запустить worker.', d.ok?'ok':'bad');load()}catch(e){show('Ошибка: '+e.message,'bad')}}
 // Сбрасывает зависшие задачи в retry.
 async function resetStalled(){if(!confirm('Сбросить зависшие задачи и перезапустить worker?'))return;show('Проверяю зависшие...');try{const d=await api(API+'?prepare_reset_stalled=1&t='+Date.now());show('Сброшено зависших: '+((d.changed||[]).length), 'ok');load()}catch(e){show('Ошибка: '+e.message,'bad')}}
+// Открывает готовый файл сразу в нашем player.html в новой вкладке.
+// Важно: progress_content_id равен content_id задачи подготовки, поэтому прогресс
+// пишется в тот же стабильный ключ, что и при запуске из Lampa.
+function watch(id){
+  const it=itemsByContentId[String(id||'')];
+  if(!it){show('Не нашёл задачу для запуска. Обнови список.', 'bad');return}
+  if(String(it.status||'')!=='ready'){show('Файл ещё не готов к просмотру.', 'bad');return}
+  const streamUrl=String(it.source_url||it.normalized_url||'');
+  if(!streamUrl){show('У задачи нет исходной ссылки для запуска.', 'bad');return}
+  const u=new URL(PLAYER);
+  u.searchParams.set('url', streamUrl);
+  u.searchParams.set('title', String(it.title||it.content_id||'Видео'));
+  u.searchParams.set('content_id', String(it.content_id||''));
+  u.searchParams.set('progress_content_id', String(it.content_id||''));
+  if(it.timeline_hashes) u.searchParams.set('timeline_hashes', String(it.timeline_hashes||''));
+  u.searchParams.set('mirror_lampa_timeline', '1');
+  u.searchParams.set('audio_track', String(Number(it.audio_track||0)));
+  u.searchParams.set('quality', String(it.quality||'balanced'));
+  u.searchParams.set('transcode', '1');
+  u.searchParams.set('from_queue', '1');
+  u.searchParams.set('v', String(Date.now()));
+  window.open(u.toString(), '_blank', 'noopener,noreferrer');
+}
 async function del(id){if(!confirm('Удалить подготовку?'))return;await api(API+'?prepare_delete=1&content_id='+encodeURIComponent(id)+'&t='+Date.now());load()}
 async function retry(id){await api(API+'?prepare_retry=1&content_id='+encodeURIComponent(id)+'&t='+Date.now());load()}
 function retryInfo(it){
@@ -100,6 +126,8 @@ async function load(){
     if(!d.ok){list.innerHTML='<div class="empty">API вернул ошибку: '+esc(d.error||'unknown')+'</div>';return}
     if(!Array.isArray(d.items)){list.innerHTML='<div class="empty">API не вернул список items. Проверь: api.php?prepare_inspect=1</div>';return}
     const items=d.items;
+    itemsByContentId={};
+    items.forEach(it=>{if(it&&it.content_id)itemsByContentId[String(it.content_id)]=it});
     if(!items.length){list.innerHTML='<div class="empty">Очередь пустая'+(typeof d.total==='number'?` · записей в БД: ${d.total}`:'')+(d.db_file?`<br><span class=small>DB: ${esc(d.db_file)} · size: ${Number(d.db_size||0)} байт</span>`:'')+'</div>';return}
     list.innerHTML=items.map(it=>{
       const p=Math.max(0,Math.min(100,Number(it.progress||0)));
@@ -108,6 +136,7 @@ async function load(){
       const rInfo=retryInfo(it);
       const attempt=`${Number(it.attempts||0)}/${Number(it.max_attempts||3)}`;
       const actions=[];
+      if(st==='ready') actions.push(`<button class="btn play" onclick="watch('${esc(it.content_id)}')">▶ Смотреть</button>`);
       if(st==='error'||st==='retry') actions.push(`<button class="btn ok" onclick="retry('${esc(it.content_id)}')">Повторить</button>`);
       actions.push(`<button class="btn bad" onclick="del('${esc(it.content_id)}')">Удалить</button>`);
       return `<div class="item">

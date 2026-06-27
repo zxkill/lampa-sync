@@ -33,8 +33,8 @@ const TORRSERVER_PASSWORD = '';
 
 // Пути к ffmpeg и ffprobe. Можно указать просто имена, если они доступны в PATH.
 // Если worker не находит бинарники, укажите абсолютные пути: /usr/bin/ffmpeg и /usr/bin/ffprobe.
-const FFMPEG_BIN = 'ffmpeg';
-const FFPROBE_BIN = 'ffprobe';
+const FFMPEG_BIN =  __DIR__ . '/bin/ffmpeg';
+const FFPROBE_BIN = __DIR__ . '/bin/ffprobe';
 
 // Рабочая директория проекта: SQLite-базы, временные HLS-сессии, подготовленные файлы и логи.
 // Должна быть доступна на запись и веб-серверу, и CLI-worker-у.

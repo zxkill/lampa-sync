@@ -1,0 +1,877 @@
+/*
+ * Lampa Sync Player — стили плеера.
+ *
+ * Вынесено из прежнего inline <style> в player.html.
+ * Логика CSS сохранена: обычный HUD, мобильная адаптация,
+ * iPhone landscape-режим и подсветка фокуса ТВ-пульта.
+ */
+
+        :root {
+            --accent: #7c5cff;
+            --accent2: #22d3ee;
+            --line: rgba(255, 255, 255, .16);
+            --muted: rgba(255, 255, 255, .68);
+            --panel: rgba(13, 13, 16, .78);
+            --vw: 100vw;
+            --vh: 100vh;
+        }
+
+        * {
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            width: var(--vw);
+            height: var(--vh);
+            min-width: var(--vw);
+            min-height: var(--vh);
+            background: #000;
+            color: #fff;
+            overflow: hidden;
+            overscroll-behavior: none;
+            touch-action: manipulation;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+        }
+
+        body {
+            position: fixed;
+            inset: 0;
+        }
+
+        #app {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: var(--vw);
+            height: var(--vh);
+            overflow: hidden;
+            background:
+                radial-gradient(circle at 15% 10%, rgba(124, 92, 255, .22), transparent 36%),
+                #000;
+            isolation: isolate;
+        }
+
+        #video {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            background: #000;
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        #shade {
+            position: absolute;
+            inset: 0;
+            z-index: 2;
+            pointer-events: none;
+            background:
+                linear-gradient(to bottom, rgba(0, 0, 0, .76), transparent 25%, transparent 62%, rgba(0, 0, 0, .90)),
+                linear-gradient(to right, rgba(0,0,0,.22), transparent 18%, transparent 82%, rgba(0,0,0,.18));
+            transition: opacity .22s ease;
+        }
+
+        #top {
+            position: absolute;
+            z-index: 30;
+            top: max(8px, env(safe-area-inset-top));
+            left: max(10px, env(safe-area-inset-left));
+            right: max(10px, env(safe-area-inset-right));
+            min-height: 48px;
+            display: flex;
+            gap: 12px;
+            align-items: flex-start;
+            pointer-events: auto;
+            transition: opacity .22s ease;
+        }
+
+        #tw {
+            min-width: 0;
+            flex: 1;
+            padding-top: 2px;
+        }
+
+        #title {
+            font-size: clamp(15px, 2vw, 20px);
+            font-weight: 800;
+            line-height: 1.18;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            text-shadow: 0 2px 8px #000;
+        }
+
+        #meta {
+            margin-top: 6px;
+            display: flex;
+            gap: 7px;
+            flex-wrap: wrap;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .pill {
+            padding: 4px 8px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: rgba(0, 0, 0, .38);
+            backdrop-filter: blur(12px);
+            white-space: nowrap;
+        }
+
+        .audio-select {
+            max-width: min(260px, 42vw);
+            height: 29px;
+            padding: 3px 28px 3px 9px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: rgba(0, 0, 0, .38);
+            color: #fff;
+            font: inherit;
+            font-size: 12px;
+            outline: none;
+        }
+
+        .audio-select option {
+            background: #151518;
+            color: #fff;
+        }
+
+        .ok {
+            color: #baffd5;
+            border-color: rgba(37, 211, 102, .45);
+        }
+
+        .warn {
+            color: #ffe0a3;
+            border-color: rgba(255, 190, 80, .45);
+        }
+
+        .btn {
+            appearance: none;
+            border: 1px solid var(--line);
+            background: rgba(0, 0, 0, .46);
+            color: #fff;
+            border-radius: 14px;
+            min-width: 42px;
+            height: 42px;
+            padding: 0 12px;
+            font-size: 17px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            backdrop-filter: blur(14px);
+            pointer-events: auto;
+            touch-action: manipulation;
+        }
+
+        .btn:active {
+            transform: scale(.96);
+        }
+
+        .prepare-btn {
+            flex: 0 0 auto;
+            min-width: 118px;
+            height: 42px;
+            padding: 0 14px;
+            font-size: 13px;
+            font-weight: 800;
+            letter-spacing: .01em;
+            white-space: nowrap;
+            background: linear-gradient(135deg, rgba(124,92,255,.42), rgba(34,211,238,.24));
+            border-color: rgba(255,255,255,.24);
+            box-shadow: 0 8px 28px rgba(0,0,0,.24);
+        }
+
+        .prepare-btn.preparing {
+            color: #ffe0a3;
+            border-color: rgba(255,190,80,.55);
+            background: rgba(0,0,0,.50);
+        }
+
+        .prepare-btn.ready {
+            color: #baffd5;
+            border-color: rgba(37,211,102,.55);
+            background: rgba(10,90,45,.34);
+        }
+
+        .prepare-btn.delete {
+            color: #ffd0d0;
+            border-color: rgba(255,120,120,.52);
+            background: rgba(120,0,0,.36);
+        }
+
+        #center {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            z-index: 20;
+            transform: translate(-50%, -50%);
+            width: 84px;
+            height: 84px;
+            border-radius: 50%;
+            border: 1px solid rgba(255, 255, 255, .28);
+            background: rgba(0, 0, 0, .52);
+            color: #fff;
+            font-size: 38px;
+            cursor: pointer;
+            backdrop-filter: blur(18px);
+            pointer-events: auto;
+            touch-action: manipulation;
+            transition: opacity .22s ease, transform .12s ease;
+        }
+
+        #center:active {
+            transform: translate(-50%, -50%) scale(.96);
+        }
+
+        #status {
+            position: absolute;
+            z-index: 22;
+            left: 50%;
+            top: calc(50% + 72px);
+            transform: translateX(-50%);
+            min-width: min(430px, calc(var(--vw) - 32px));
+            max-width: calc(var(--vw) - 32px);
+            padding: 12px 14px;
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            background: rgba(0, 0, 0, .60);
+            backdrop-filter: blur(18px);
+            text-align: center;
+            font-size: 13px;
+            line-height: 1.45;
+            pointer-events: none;
+            transition: opacity .22s ease;
+        }
+
+        .hide {
+            display: none !important;
+        }
+
+        .spin {
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(255, 255, 255, .25);
+            border-top-color: #fff;
+            border-radius: 50%;
+            display: inline-block;
+            vertical-align: -4px;
+            margin-right: 8px;
+            animation: spin .8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        #controls {
+            position: absolute;
+            z-index: 40;
+            left: max(10px, env(safe-area-inset-left));
+            right: max(10px, env(safe-area-inset-right));
+            bottom: max(10px, env(safe-area-inset-bottom));
+            pointer-events: none;
+            transition: opacity .22s ease;
+        }
+
+        #progWrap {
+            position: relative;
+            z-index: 41;
+            min-height: 30px;
+            padding: 10px 0 9px;
+            cursor: pointer;
+            pointer-events: auto;
+            touch-action: none;
+        }
+
+        #prog {
+            position: relative;
+            height: 8px;
+            background: rgba(255, 255, 255, .22);
+            border-radius: 999px;
+            overflow: visible;
+        }
+
+        #buf,
+        #bar {
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 0;
+            border-radius: 999px;
+            pointer-events: none;
+        }
+
+        #buf {
+            background: rgba(255, 255, 255, .34);
+        }
+
+        #bar {
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+        }
+
+        #knob {
+            position: absolute;
+            top: 50%;
+            left: 0;
+            width: 18px;
+            height: 18px;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+            background: #fff;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, .55);
+            pointer-events: none;
+        }
+
+        #row {
+            position: relative;
+            z-index: 42;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border: 1px solid var(--line);
+            border-radius: 22px;
+            background: var(--panel);
+            backdrop-filter: blur(18px);
+            pointer-events: auto;
+            touch-action: manipulation;
+        }
+
+        #time {
+            min-width: 150px;
+            font-variant-numeric: tabular-nums;
+            font-size: 13px;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+
+        #spacer {
+            flex: 1;
+            min-width: 4px;
+            pointer-events: none;
+        }
+
+        #vol {
+            width: 110px;
+            accent-color: var(--accent);
+            pointer-events: auto;
+            touch-action: manipulation;
+        }
+
+        #err {
+            position: absolute;
+            z-index: 60;
+            left: 16px;
+            right: 16px;
+            bottom: calc(max(10px, env(safe-area-inset-bottom)) + 92px);
+            display: none;
+            padding: 14px 16px;
+            background: rgba(150, 0, 0, .88);
+            border-radius: 18px;
+            border: 1px solid rgba(255, 255, 255, .18);
+            font-size: 13px;
+            line-height: 1.5;
+            pointer-events: auto;
+        }
+
+        #toast {
+            position: absolute;
+            z-index: 61;
+            left: 50%;
+            top: 22%;
+            transform: translateX(-50%);
+            display: none;
+            padding: 10px 14px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: rgba(0, 0, 0, .62);
+            backdrop-filter: blur(14px);
+            font-size: 13px;
+            pointer-events: none;
+        }
+
+        /*
+         * Собственный слой субтитров.
+         * Нативный <track> в браузерах и WebView ведёт себя нестабильно:
+         * дорожка может загрузиться, но не отрисоваться поверх HLS/MSE.
+         * Поэтому WebVTT дополнительно парсится в JS и выводится отдельным overlay.
+         */
+        #subtitleOverlay {
+            position: absolute;
+            z-index: 56;
+            left: max(18px, env(safe-area-inset-left));
+            right: max(18px, env(safe-area-inset-right));
+            bottom: calc(max(10px, env(safe-area-inset-bottom)) + 112px);
+            display: none;
+            text-align: center;
+            white-space: pre-line;
+            pointer-events: none;
+            color: #fff;
+            font-size: clamp(18px, 3.2vw, 34px);
+            font-weight: 700;
+            line-height: 1.25;
+            background: rgba(0, 0, 0, .38);
+            border-radius: 14px;
+            padding: 6px 12px;
+            text-shadow:
+                0 2px 4px #000,
+                0 -2px 4px #000,
+                2px 0 4px #000,
+                -2px 0 4px #000;
+        }
+
+        body.clean #subtitleOverlay {
+            bottom: max(28px, env(safe-area-inset-bottom));
+        }
+
+        body.clean #shade,
+        body.clean #top,
+        body.clean #controls,
+        body.clean #center,
+        body.clean #status {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        body.clean #video,
+        body.clean #app {
+            pointer-events: auto;
+        }
+
+        @media (max-width: 720px) {
+            #top {
+                left: max(10px, env(safe-area-inset-left));
+                right: max(10px, env(safe-area-inset-right));
+            }
+
+            #controls {
+                left: max(8px, env(safe-area-inset-left));
+                right: max(8px, env(safe-area-inset-right));
+            }
+
+            #row {
+                gap: 6px;
+                padding: 8px;
+                border-radius: 18px;
+            }
+
+            .btn {
+                min-width: 38px;
+                height: 38px;
+                border-radius: 13px;
+                font-size: 15px;
+                padding: 0 9px;
+            }
+
+            .prepare-btn {
+                min-width: 96px;
+                height: 38px;
+                padding: 0 10px;
+                font-size: 12px;
+            }
+
+            #time {
+                min-width: 112px;
+                font-size: 12px;
+            }
+
+            #vol {
+                display: none;
+            }
+
+            #center {
+                width: 72px;
+                height: 72px;
+                font-size: 32px;
+            }
+
+            .pill {
+                font-size: 11px;
+                padding: 3px 7px;
+            }
+        }
+
+        /*
+         * iPhone landscape:
+         * The progress area and button row must never overlap.
+         * Hit routing in JS additionally ignores progress if y is inside #row.
+         */
+        @media (orientation: landscape) and (max-height: 540px) {
+            #top {
+                min-height: 42px;
+                padding: 4px 0;
+                align-items: center;
+            }
+
+            #title {
+                font-size: 14px;
+                line-height: 1.15;
+            }
+
+            #meta {
+                margin-top: 3px;
+                gap: 5px;
+                font-size: 10px;
+                max-height: 24px;
+                overflow: hidden;
+                flex-wrap: nowrap;
+            }
+
+            #prepared {
+                display: none;
+            }
+
+            .pill {
+                padding: 2px 7px;
+                line-height: 18px;
+            }
+
+            .btn {
+                min-width: 40px;
+                height: 40px;
+                border-radius: 14px;
+                font-size: 15px;
+                padding: 0 10px;
+            }
+
+            #center {
+                width: 68px;
+                height: 68px;
+                font-size: 30px;
+            }
+
+            #controls {
+                bottom: max(8px, env(safe-area-inset-bottom));
+            }
+
+            #progWrap {
+                min-height: 24px;
+                padding: 4px 0 8px;
+                margin-bottom: 4px;
+            }
+
+            #row {
+                max-width: min(660px, calc(var(--vw) - env(safe-area-inset-left) - env(safe-area-inset-right) - 24px));
+                margin: 0 auto;
+                padding: 7px 8px;
+                gap: 7px;
+                border-radius: 18px;
+            }
+
+            #time {
+                min-width: 108px;
+                font-size: 12px;
+            }
+
+            #vol {
+                display: block;
+                width: 82px;
+                min-width: 70px;
+                max-width: 16vw;
+            }
+
+            #status {
+                top: 50%;
+                max-width: min(420px, calc(var(--vw) - env(safe-area-inset-left) - env(safe-area-inset-right) - 32px));
+            }
+        }
+
+        @media (orientation: landscape) and (max-height: 420px) {
+            #row {
+                max-width: min(610px, calc(var(--vw) - env(safe-area-inset-left) - env(safe-area-inset-right) - 28px));
+            }
+
+            #vol {
+                width: 70px;
+            }
+
+            #time {
+                min-width: 104px;
+            }
+        }
+    
+        /* ===== Lampa Sync v5.7: dedicated iPhone landscape mode ===== */
+        body.iphone-landscape #progWrap {
+            display: none !important;
+            pointer-events: none !important;
+        }
+
+        body.iphone-landscape #controls {
+            position: fixed !important;
+            z-index: 2147483000 !important;
+            left: max(10px, env(safe-area-inset-left)) !important;
+            right: max(10px, env(safe-area-inset-right)) !important;
+            bottom: max(14px, env(safe-area-inset-bottom)) !important;
+            pointer-events: auto !important;
+            transform: translateZ(0);
+        }
+
+        body.iphone-landscape #row {
+            max-width: min(560px, calc(var(--vw) - env(safe-area-inset-left) - env(safe-area-inset-right) - 24px)) !important;
+            margin: 0 auto !important;
+            padding: 8px 9px !important;
+            gap: 8px !important;
+            border-radius: 20px !important;
+            pointer-events: auto !important;
+            touch-action: manipulation !important;
+            transform: translateZ(0);
+        }
+
+        body.iphone-landscape #row .btn {
+            min-width: 42px !important;
+            height: 42px !important;
+            padding: 0 11px !important;
+            border-radius: 14px !important;
+            font-size: 15px !important;
+            pointer-events: auto !important;
+            touch-action: manipulation !important;
+        }
+
+        body.iphone-landscape #vol,
+        body.iphone-landscape #spacer {
+            display: none !important;
+        }
+
+        body.iphone-landscape #time {
+            min-width: 112px !important;
+            font-size: 12px !important;
+            text-align: center !important;
+        }
+
+        body.iphone-landscape #top {
+            position: fixed !important;
+            z-index: 2147482990 !important;
+            top: max(8px, env(safe-area-inset-top)) !important;
+            left: max(10px, env(safe-area-inset-left)) !important;
+            right: max(10px, env(safe-area-inset-right)) !important;
+            pointer-events: auto !important;
+            transform: translateZ(0);
+        }
+
+        body.iphone-landscape #prepareBtn {
+            min-width: 88px !important;
+            height: 36px !important;
+            padding: 0 9px !important;
+            border-radius: 13px !important;
+            font-size: 11px !important;
+        }
+
+        body.iphone-landscape #center {
+            position: fixed !important;
+            z-index: 2147482980 !important;
+            width: 68px !important;
+            height: 68px !important;
+            font-size: 30px !important;
+            pointer-events: auto !important;
+            touch-action: manipulation !important;
+            transform: translate(-50%, -50%) translateZ(0);
+        }
+
+        body.iphone-landscape #center:active {
+            transform: translate(-50%, -50%) scale(.96) translateZ(0);
+        }
+
+        body.iphone-landscape #prepared {
+            display: none !important;
+        }
+
+        body.iphone-landscape #meta {
+            flex-wrap: nowrap !important;
+            max-height: 24px !important;
+            overflow: hidden !important;
+            font-size: 10px !important;
+        }
+
+        body.iphone-landscape #title {
+            font-size: 14px !important;
+            line-height: 1.15 !important;
+        }
+
+        body.iphone-landscape #video {
+            pointer-events: none !important;
+        }
+
+        body.iphone-landscape #shade {
+            pointer-events: none !important;
+        }
+
+    
+        /* ===== Lampa Sync v5.8: separate iPhone landscape control layer ===== */
+
+        #iphoneHud,
+        #iphonePanel {
+            display: none;
+        }
+
+        body.iphone-landscape #controls {
+            display: none !important;
+            pointer-events: none !important;
+        }
+
+        body.iphone-landscape #iphoneHud {
+            display: block !important;
+            position: fixed !important;
+            z-index: 2147483000 !important;
+            left: max(12px, env(safe-area-inset-left)) !important;
+            right: max(12px, env(safe-area-inset-right)) !important;
+            bottom: calc(max(14px, env(safe-area-inset-bottom)) + 72px) !important;
+            pointer-events: none !important;
+        }
+
+        body.iphone-landscape #iphoneReadout {
+            width: 100%;
+            text-align: center;
+            font-size: 12px;
+            line-height: 18px;
+            color: rgba(255,255,255,.92);
+            text-shadow: 0 1px 6px rgba(0,0,0,.9);
+            font-variant-numeric: tabular-nums;
+            margin-bottom: 7px;
+            pointer-events: none;
+        }
+
+        body.iphone-landscape #iphoneProgress {
+            position: relative;
+            width: 100%;
+            height: 7px;
+            border-radius: 999px;
+            overflow: hidden;
+            background: rgba(255,255,255,.22);
+            pointer-events: none;
+        }
+
+        body.iphone-landscape #iphoneBuf,
+        body.iphone-landscape #iphoneBar {
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 0;
+            border-radius: 999px;
+            pointer-events: none;
+        }
+
+        body.iphone-landscape #iphoneBuf {
+            background: rgba(255,255,255,.34);
+        }
+
+        body.iphone-landscape #iphoneBar {
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+        }
+
+        body.iphone-landscape #iphonePanel {
+            display: grid !important;
+            position: fixed !important;
+            z-index: 2147483100 !important;
+            left: max(8px, env(safe-area-inset-left)) !important;
+            right: max(8px, env(safe-area-inset-right)) !important;
+            bottom: max(10px, env(safe-area-inset-bottom)) !important;
+            height: 62px !important;
+            grid-template-columns: repeat(5, 1fr) !important;
+            gap: 8px !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            pointer-events: auto !important;
+            touch-action: manipulation !important;
+            transform: none !important;
+        }
+
+        body.iphone-landscape .iphoneBtn {
+            appearance: none !important;
+            -webkit-appearance: none !important;
+            width: 100% !important;
+            height: 62px !important;
+            min-width: 0 !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            border-radius: 18px !important;
+            border: 1px solid rgba(255,255,255,.18) !important;
+            background: rgba(13,13,16,.86) !important;
+            color: #fff !important;
+            font-size: 18px !important;
+            font-weight: 700 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            pointer-events: auto !important;
+            touch-action: manipulation !important;
+            transform: none !important;
+            backdrop-filter: none !important;
+            -webkit-user-select: none !important;
+            user-select: none !important;
+        }
+
+        body.iphone-landscape .iphoneBtn:active {
+            background: rgba(124,92,255,.55) !important;
+        }
+
+        body.iphone-landscape #center {
+            display: none !important;
+        }
+
+        body.iphone-landscape #top {
+            position: fixed !important;
+            z-index: 2147482900 !important;
+            pointer-events: auto !important;
+            transform: none !important;
+        }
+
+        body.iphone-landscape #prepared {
+            display: none !important;
+        }
+
+        body.iphone-landscape #meta {
+            flex-wrap: nowrap !important;
+            max-height: 24px !important;
+            overflow: hidden !important;
+            font-size: 10px !important;
+        }
+
+        body.iphone-landscape #title {
+            font-size: 14px !important;
+            line-height: 1.15 !important;
+        }
+
+    
+        /* ===== Lampa Sync v5.9: TV remote focus ===== */
+        body.remote-mode #top,
+        body.remote-mode #controls,
+        body.remote-mode #center,
+        body.remote-mode #status {
+            opacity: 1 !important;
+            pointer-events: auto !important;
+        }
+
+        body.remote-mode.clean #top,
+        body.remote-mode.clean #controls,
+        body.remote-mode.clean #center,
+        body.remote-mode.clean #status {
+            opacity: 1 !important;
+            pointer-events: auto !important;
+        }
+
+        .remote-focused {
+            outline: 3px solid rgba(34, 211, 238, .95) !important;
+            outline-offset: 3px !important;
+            box-shadow:
+                0 0 0 3px rgba(124, 92, 255, .55),
+                0 0 28px rgba(34, 211, 238, .42) !important;
+        }
+
+        body.remote-mode #row {
+            box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 8px 30px rgba(0,0,0,.35);
+        }
+
+    

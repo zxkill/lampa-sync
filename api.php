@@ -9,7 +9,7 @@ ini_set('log_errors', '1');
 // Подключаем локальные настройки: домен, TorrServer, пути к ffmpeg и рабочую директорию.
 require_once __DIR__ . '/bootstrap.php';
 
-if (!defined('API_VERSION')) define('API_VERSION', 'v1.0.9-ultra-quality-preset');
+if (!defined('API_VERSION')) define('API_VERSION', 'v1.0.12-copy-ts-remux-preset');
 
 
 // Основные рабочие директории и SQLite-база очереди подготовки.
@@ -312,6 +312,7 @@ function prepare_db(string $dbFile): PDO {
         'file_index' => 'INTEGER NOT NULL DEFAULT -1',
         'stream_path' => "TEXT NOT NULL DEFAULT ''",
         'audio_track' => 'INTEGER NOT NULL DEFAULT 0',
+        'timeline_hashes' => "TEXT NOT NULL DEFAULT ''",
     ];
     foreach ($add as $name => $sql) {
         if (!isset($cols[$name])) {
@@ -402,6 +403,7 @@ function prepare_row_out(array $r, string $preparedRoot): array {
         'file_index'=>$fileIndex,
         'stream_path'=>$streamPath,
         'audio_track'=>(int)($r['audio_track'] ?? 0),
+        'timeline_hashes'=>(string)($r['timeline_hashes'] ?? ''),
         'audio_tracks'=>audio_tracks_from_media_cache($dir),
         'torrent_key'=>($torrentHash !== '' && $fileIndex >= 0) ? ($torrentHash . ':' . $fileIndex) : '',
         'status'=>$status,
@@ -715,6 +717,7 @@ function prepare_start(string $dbFile, string $preparedRoot): void {
     if ($title === '') $title = prepare_title_from_url($nu);
     $quality = req('quality', 'fast');
     $audioTrack = max(0, (int)req('audio_track', '0'));
+    $timelineHashes = sanitize_timeline_hashes(req('timeline_hashes', ''));
     if ($cid === '' || str_starts_with($cid, 'stream_')) $cid = prepare_stream_content_id($nu, $audioTrack);
     $key = prepare_key($cid, $nu . '#a' . $audioTrack);
     $now = prepare_now_ms();
@@ -727,17 +730,22 @@ function prepare_start(string $dbFile, string $preparedRoot): void {
     }
 
     if ($existing && in_array((string)$existing['status'], ['queued','processing','retry','ready'], true)) {
+        if ($timelineHashes !== '') {
+            $stHash = $pdo->prepare('UPDATE prepare_queue SET timeline_hashes=:timeline_hashes, updated_at=:updated WHERE content_id=:cid');
+            $stHash->execute(['timeline_hashes'=>$timelineHashes, 'updated'=>$now, 'cid'=>(string)$existing['content_id']]);
+            $existing = prepare_get_row($pdo, (string)$existing['content_id']) ?: $existing;
+        }
         $spawn = null;
         if ((string)$existing['status'] !== 'ready') $spawn = spawn_prepare_worker();
         json(['ok'=>true,'already_exists'=>true,'item'=>prepare_row_out($existing,$preparedRoot),'spawn'=>$spawn]);
     }
 
     if ($existing) {
-        $st = $pdo->prepare('UPDATE prepare_queue SET prepare_key=:pkey,title=:title,source_url=:src,normalized_url=:nu,torrent_hash=:th,file_index=:fi,stream_path=:sp,audio_track=:at,quality=:quality,status=\'queued\',progress=0,duration=0,prepared_seconds=0,segments=0,pid=0,worker_pid=0,attempts=0,max_attempts=3,next_retry_at=0,last_heartbeat_at=0,last_progress_at=0,cancel_requested=0,error=\'\',hls_url=:hls,updated_at=:updated,started_at=0,finished_at=0 WHERE content_id=:cid');
-        $st->execute(['pkey'=>$key,'title'=>$title,'src'=>$url,'nu'=>$nu,'th'=>$torrentHash,'fi'=>$fileIndex,'sp'=>$streamPath,'at'=>$audioTrack,'quality'=>$quality,'hls'=>prepare_public_hls_url($key),'updated'=>$now,'cid'=>$cid]);
+        $st = $pdo->prepare('UPDATE prepare_queue SET prepare_key=:pkey,title=:title,source_url=:src,normalized_url=:nu,torrent_hash=:th,file_index=:fi,stream_path=:sp,audio_track=:at,timeline_hashes=:timeline_hashes,quality=:quality,status=\'queued\',progress=0,duration=0,prepared_seconds=0,segments=0,pid=0,worker_pid=0,attempts=0,max_attempts=3,next_retry_at=0,last_heartbeat_at=0,last_progress_at=0,cancel_requested=0,error=\'\',hls_url=:hls,updated_at=:updated,started_at=0,finished_at=0 WHERE content_id=:cid');
+        $st->execute(['pkey'=>$key,'title'=>$title,'src'=>$url,'nu'=>$nu,'th'=>$torrentHash,'fi'=>$fileIndex,'sp'=>$streamPath,'at'=>$audioTrack,'timeline_hashes'=>$timelineHashes,'quality'=>$quality,'hls'=>prepare_public_hls_url($key),'updated'=>$now,'cid'=>$cid]);
     } else {
-        $st = $pdo->prepare('INSERT INTO prepare_queue(content_id,prepare_key,title,source_url,normalized_url,torrent_hash,file_index,stream_path,audio_track,quality,status,progress,hls_url,created_at,updated_at,max_attempts) VALUES(:cid,:pkey,:title,:src,:nu,:th,:fi,:sp,:at,:quality,\'queued\',0,:hls,:created,:updated,3)');
-        $st->execute(['cid'=>$cid,'pkey'=>$key,'title'=>$title,'src'=>$url,'nu'=>$nu,'th'=>$torrentHash,'fi'=>$fileIndex,'sp'=>$streamPath,'at'=>$audioTrack,'quality'=>$quality,'hls'=>prepare_public_hls_url($key),'created'=>$now,'updated'=>$now]);
+        $st = $pdo->prepare('INSERT INTO prepare_queue(content_id,prepare_key,title,source_url,normalized_url,torrent_hash,file_index,stream_path,audio_track,timeline_hashes,quality,status,progress,hls_url,created_at,updated_at,max_attempts) VALUES(:cid,:pkey,:title,:src,:nu,:th,:fi,:sp,:at,:timeline_hashes,:quality,\'queued\',0,:hls,:created,:updated,3)');
+        $st->execute(['cid'=>$cid,'pkey'=>$key,'title'=>$title,'src'=>$url,'nu'=>$nu,'th'=>$torrentHash,'fi'=>$fileIndex,'sp'=>$streamPath,'at'=>$audioTrack,'timeline_hashes'=>$timelineHashes,'quality'=>$quality,'hls'=>prepare_public_hls_url($key),'created'=>$now,'updated'=>$now]);
     }
 
     $spawn = spawn_prepare_worker();
@@ -820,6 +828,7 @@ function prepare_row_out_safe(array $r, string $preparedRoot, string $err): arra
         'title'=>(string)($r['title'] ?? ''),
         'quality'=>(string)($r['quality'] ?? 'fast'),
         'audio_track'=>(int)($r['audio_track'] ?? 0),
+        'timeline_hashes'=>(string)($r['timeline_hashes'] ?? ''),
         'audio_tracks'=>[],
         'status'=>(string)($r['status'] ?? 'error'),
         'progress'=>(float)($r['progress'] ?? 0),
@@ -1527,13 +1536,14 @@ function encoding(array $m,string $quality): array {
      */
     if($quality === 'copy' && $safeH264){
         return [
-            'name'=>'copy_video_fmp4_safe_audio_debug',
-            'description'=>'debug only: copy H.264 video, transcode audio to AAC-LC; may desync on bad timestamps',
+            'name'=>'copy_video_audio_mpegts_remux',
+            'description'=>'fast remux: copy H.264 video and selected audio track into MPEG-TS HLS; very low CPU, no video/audio re-encode',
             'video_args'=>['-c:v copy'],
-            'audio_args'=>audio_browser_args('128k', false),
-            'segment_type'=>'fmp4',
-            'preserve_timestamps'=>false,
-            'cpu_level'=>'very_low_desync_risk'
+            'audio_args'=>['-c:a copy'],
+            'segment_type'=>'mpegts',
+            'segment_ext'=>'ts',
+            'preserve_timestamps'=>true,
+            'cpu_level'=>'very_low_original_ts_remux'
         ];
     }
 
@@ -1642,6 +1652,9 @@ function start_hls(string $root): void {
         foreach($enc['video_args'] as $a)$parts[]=$a;
         foreach($enc['audio_args'] as $a)$parts[]=$a;
 
+        $segmentType = (string)($enc['segment_type'] ?? 'fmp4');
+        $segmentExt = (string)($enc['segment_ext'] ?? ($segmentType === 'mpegts' ? 'ts' : 'm4s'));
+
         array_push(
             $parts,
             '-max_muxing_queue_size 4096',
@@ -1651,12 +1664,19 @@ function start_hls(string $root): void {
             '-f hls',
             '-hls_time 4',
             '-hls_list_size 0',
-            '-hls_flags independent_segments',
-            '-hls_segment_type fmp4',
-            '-hls_fmp4_init_filename '.escapeshellarg('init.mp4'),
-            '-hls_segment_filename '.escapeshellarg("$dir/seg_%05d.m4s"),
-            escapeshellarg("$dir/index.m3u8")
+            '-hls_flags independent_segments'
         );
+
+        if ($segmentType === 'mpegts') {
+            $parts[] = '-hls_segment_type mpegts';
+            $parts[] = '-hls_segment_filename '.escapeshellarg("$dir/seg_%05d.ts");
+        } else {
+            $parts[] = '-hls_segment_type fmp4';
+            $parts[] = '-hls_fmp4_init_filename '.escapeshellarg('init.mp4');
+            $parts[] = '-hls_segment_filename '.escapeshellarg("$dir/seg_%05d.{$segmentExt}");
+        }
+
+        $parts[] = escapeshellarg("$dir/index.m3u8");
 
         $cmd='nice -n 10 '.implode(' ',$parts).' > '.escapeshellarg("$dir/ffmpeg.log").' 2>&1 & echo $!';
         file_put_contents("$dir/ffmpeg_cmd.txt",$cmd);
@@ -1905,11 +1925,178 @@ function progress_api(string $dir): void {
             ]);
         }
 
-        progress_log($dir, 'post_ok', ['content_id'=>$cid,'position'=>$pos,'duration'=>$dur,'percent'=>$pct,'ended'=>$ended,'device'=>$device]);
-        json(['ok' => true, 'content_id' => $cid, 'position' => $pos, 'duration' => $dur, 'percent' => $pct]);
+        $mirror = mirror_lampa_file_view_from_progress($dir, $d, $cid, $pos, $dur, $pct, $device);
+        progress_log($dir, 'post_ok', ['content_id'=>$cid,'position'=>$pos,'duration'=>$dur,'percent'=>$pct,'ended'=>$ended,'device'=>$device,'mirror'=>$mirror]);
+        json(['ok' => true, 'content_id' => $cid, 'position' => $pos, 'duration' => $dur, 'percent' => $pct, 'mirror_lampa'=>$mirror]);
     }
 
     json(['error' => 'Method not allowed'], 405);
+}
+
+/**
+ * Нормализует список hash-ключей timeline Lampa.
+ */
+function sanitize_timeline_hashes(string $raw): string {
+    $out = [];
+    foreach (preg_split('~[,;\s]+~', $raw) ?: [] as $item) {
+        $h = trim((string)$item);
+        if ($h === '') continue;
+        $h = preg_replace('~[^a-zA-Z0-9_:\-\.]+~', '', $h);
+        if ($h === '' || isset($out[$h])) continue;
+        $out[$h] = true;
+    }
+    return implode(',', array_keys($out));
+}
+
+/**
+ * Когда player.html открыт напрямую со страницы очереди, рядом нет родительского
+ * окна Lampa-плагина. Поэтому обычный postMessage не обновит localStorage Lampa.
+ * Этот mirror пишет timeline прямо в storage_sync(progress.php), чтобы Lampa при
+ * следующем pull получила свежий file_view/file_view_<profile>.
+ */
+function mirror_lampa_file_view_from_progress(string $dir, array $d, string $cid, float $pos, float $dur, int $pct, string $device): array {
+    if (empty($d['mirror_lampa_timeline'])) {
+        return ['enabled'=>false];
+    }
+    if ($dur <= 0) {
+        return ['enabled'=>true, 'saved'=>0, 'reason'=>'duration_empty'];
+    }
+
+    $hashes = timeline_hashes_from_payload($d, $cid);
+    if (!$hashes) {
+        return ['enabled'=>true, 'saved'=>0, 'reason'=>'no_hashes'];
+    }
+
+    if (!extension_loaded('pdo_sqlite')) {
+        return ['enabled'=>true, 'saved'=>0, 'reason'=>'pdo_sqlite_missing'];
+    }
+
+    $dbFile = rtrim($dir, '/') . '/progress.sqlite';
+    $pdo = new PDO('sqlite:' . $dbFile);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $pdo->exec('PRAGMA busy_timeout = 5000');
+    try { $pdo->exec('PRAGMA journal_mode = WAL'); } catch (Throwable $e) {}
+    ensure_storage_sync_table_for_mirror($pdo);
+
+    $scopes = mirror_known_scopes($pdo, $d);
+    if (!$scopes) {
+        return ['enabled'=>true, 'saved'=>0, 'reason'=>'no_known_lampa_scope'];
+    }
+
+    $origin = $device !== '' ? ('direct_player_' . $device) : 'direct_player';
+    $now = (int)round(microtime(true) * 1000);
+    $saved = 0;
+    $keysSaved = [];
+
+    $pdo->beginTransaction();
+    try {
+        foreach ($scopes as $scope) {
+            $user = (string)$scope['user_id'];
+            $profile = (string)$scope['profile'];
+            $payload = ['duration'=>$dur, 'time'=>$pos, 'percent'=>max(0, min(100, $pct)), 'profile'=>$profile];
+            $keys = array_values(array_unique(['file_view', 'file_view_' . $profile]));
+            foreach ($keys as $key) {
+                $raw = mirror_read_storage_raw($pdo, $user, $profile, $key);
+                $obj = json_decode($raw !== '' ? $raw : '{}', true);
+                if (!is_array($obj) || array_values($obj) === $obj) $obj = [];
+                foreach ($hashes as $hash) {
+                    $obj[$hash] = $payload;
+                }
+                $newRaw = json_encode($obj, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+                mirror_upsert_storage_raw($pdo, $user, $profile, $key, $newRaw ?: '{}', $now + (++$saved), $origin);
+                $keysSaved[] = $user . ':' . $profile . ':' . $key;
+            }
+        }
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+
+    return ['enabled'=>true, 'saved'=>$saved, 'hashes'=>$hashes, 'keys'=>array_values(array_unique($keysSaved))];
+}
+
+function timeline_hashes_from_payload(array $d, string $cid): array {
+    $raw = [];
+    foreach (['timeline_hashes','timeline_hash','hash_timeline','hash','content_id','progress_content_id'] as $key) {
+        if (!empty($d[$key])) {
+            if (is_array($d[$key])) $raw = array_merge($raw, $d[$key]);
+            else $raw = array_merge($raw, preg_split('~[,;\s]+~', (string)$d[$key]) ?: []);
+        }
+    }
+    if ($cid !== '') $raw[] = $cid;
+    $out = [];
+    foreach ($raw as $item) {
+        $h = trim((string)$item);
+        if ($h === '') continue;
+        $h = preg_replace('~[^a-zA-Z0-9_:\-\.]+~', '', $h);
+        if ($h === '') continue;
+        if (preg_match('~^(url_\d+|title_\d+|movie_\d+|card_\d+)$~', $h)) continue;
+        if (!in_array($h, $out, true)) $out[] = $h;
+    }
+    return $out;
+}
+
+function ensure_storage_sync_table_for_mirror(PDO $pdo): void {
+    $pdo->exec('CREATE TABLE IF NOT EXISTS storage_sync (
+        user_id TEXT NOT NULL,
+        profile TEXT NOT NULL,
+        storage_key TEXT NOT NULL,
+        raw_value TEXT NOT NULL DEFAULT "",
+        updated_at INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL DEFAULT 0,
+        origin_device TEXT NOT NULL DEFAULT ""
+    )');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_storage_sync_scope ON storage_sync(user_id, profile)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_storage_sync_delta ON storage_sync(user_id, profile, updated_at)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_storage_sync_key ON storage_sync(user_id, profile, storage_key)');
+}
+
+function mirror_known_scopes(PDO $pdo, array $d): array {
+    $scopes = [];
+    $userFromPayload = preg_replace('~\D+~', '', (string)($d['lampa_user_id'] ?? $d['user_id'] ?? ''));
+    $profileFromPayload = preg_replace('~\D+~', '', (string)($d['lampa_profile'] ?? $d['profile'] ?? ''));
+    if ($userFromPayload !== '') {
+        $scopes[] = ['user_id'=>$userFromPayload, 'profile'=>$profileFromPayload !== '' ? $profileFromPayload : '0'];
+    }
+
+    $rows = $pdo->query("SELECT DISTINCT user_id, profile FROM storage_sync WHERE storage_key IN ('file_view','file_view_0') OR storage_key LIKE 'file_view_%' ORDER BY user_id, profile")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    foreach ($rows as $r) {
+        $u = (string)($r['user_id'] ?? '');
+        $p = (string)($r['profile'] ?? '0');
+        if ($u === '') continue;
+        $scopes[] = ['user_id'=>$u, 'profile'=>$p !== '' ? $p : '0'];
+    }
+
+    $uniq = [];
+    $out = [];
+    foreach ($scopes as $s) {
+        $key = $s['user_id'] . ':' . $s['profile'];
+        if (isset($uniq[$key])) continue;
+        $uniq[$key] = true;
+        $out[] = $s;
+    }
+    return $out;
+}
+
+function mirror_read_storage_raw(PDO $pdo, string $user, string $profile, string $key): string {
+    $st = $pdo->prepare('SELECT raw_value FROM storage_sync WHERE user_id=:user AND profile=:profile AND storage_key=:key ORDER BY updated_at DESC, rowid DESC LIMIT 1');
+    $st->execute(['user'=>$user, 'profile'=>$profile, 'key'=>$key]);
+    $v = $st->fetchColumn();
+    return is_string($v) ? $v : '';
+}
+
+function mirror_upsert_storage_raw(PDO $pdo, string $user, string $profile, string $key, string $raw, int $updated, string $origin): void {
+    $st = $pdo->prepare('SELECT rowid, created_at FROM storage_sync WHERE user_id=:user AND profile=:profile AND storage_key=:key ORDER BY updated_at DESC, rowid DESC LIMIT 1');
+    $st->execute(['user'=>$user, 'profile'=>$profile, 'key'=>$key]);
+    $row = $st->fetch(PDO::FETCH_ASSOC) ?: null;
+    if ($row) {
+        $up = $pdo->prepare('UPDATE storage_sync SET raw_value=:raw, updated_at=:updated, origin_device=:origin WHERE rowid=:rowid');
+        $up->execute(['raw'=>$raw, 'updated'=>$updated, 'origin'=>$origin, 'rowid'=>(int)$row['rowid']]);
+    } else {
+        $ins = $pdo->prepare('INSERT INTO storage_sync(user_id,profile,storage_key,raw_value,updated_at,created_at,origin_device) VALUES(:user,:profile,:key,:raw,:updated,:created,:origin)');
+        $ins->execute(['user'=>$user, 'profile'=>$profile, 'key'=>$key, 'raw'=>$raw, 'updated'=>$updated, 'created'=>$updated, 'origin'=>$origin]);
+    }
 }
 
 function progress_ids_from_request(string $cid, string $idsRaw): array {

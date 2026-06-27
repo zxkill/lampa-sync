@@ -8,7 +8,7 @@ ini_set('log_errors', '1');
 // Worker использует тот же config.php, что и web API.
 require_once __DIR__ . '/bootstrap.php';
 
-if (!defined('API_VERSION')) define('API_VERSION', 'v1.0.9-ultra-quality-preset');
+if (!defined('API_VERSION')) define('API_VERSION', 'v1.0.12-copy-ts-remux-preset');
 
 $DATA_DIR = LAMPA_SYNC_DATA_DIR;
 $PREPARED_DIR = $DATA_DIR . '/prepared';
@@ -336,6 +336,9 @@ function process_job(PDO $pdo, array $job, string $preparedRoot): void {
         ];
         foreach ($enc['video_args'] as $a) $parts[] = $a;
         foreach ($enc['audio_args'] as $a) $parts[] = $a;
+        $segmentType = (string)($enc['segment_type'] ?? 'fmp4');
+        $segmentExt = (string)($enc['segment_ext'] ?? ($segmentType === 'mpegts' ? 'ts' : 'm4s'));
+
         array_push(
             $parts,
             '-max_muxing_queue_size 4096',
@@ -345,12 +348,19 @@ function process_job(PDO $pdo, array $job, string $preparedRoot): void {
             '-f hls',
             '-hls_time 4',
             '-hls_list_size 0',
-            '-hls_flags independent_segments',
-            '-hls_segment_type fmp4',
-            '-hls_fmp4_init_filename '.escapeshellarg('init.mp4'),
-            '-hls_segment_filename '.escapeshellarg("$dir/seg_%05d.m4s"),
-            escapeshellarg("$dir/index.m3u8")
+            '-hls_flags independent_segments'
         );
+
+        if ($segmentType === 'mpegts') {
+            $parts[] = '-hls_segment_type mpegts';
+            $parts[] = '-hls_segment_filename '.escapeshellarg("$dir/seg_%05d.ts");
+        } else {
+            $parts[] = '-hls_segment_type fmp4';
+            $parts[] = '-hls_fmp4_init_filename '.escapeshellarg('init.mp4');
+            $parts[] = '-hls_segment_filename '.escapeshellarg("$dir/seg_%05d.{$segmentExt}");
+        }
+
+        $parts[] = escapeshellarg("$dir/index.m3u8");
 
         $cmd = 'nice -n 12 ' . implode(' ', $parts) . ' > ' . escapeshellarg("$dir/ffmpeg.log") . ' 2>&1 & echo $!';
         file_put_contents("$dir/ffmpeg_cmd.txt", $cmd);
@@ -789,7 +799,7 @@ function encoding(array $m,string $quality): array {
     $vc=$m['video_codec']??''; $pix=$m['video_pix_fmt']??'';
     $safeH264 = $vc === 'h264' && $pix !== '' && !str_contains($pix, '10') && !str_contains($pix, '12');
     if($quality === 'copy' && $safeH264){
-        return ['name'=>'copy_video_fmp4_safe_audio_debug','video_args'=>['-c:v copy'],'audio_args'=>audio_browser_args('128k', false),'segment_type'=>'fmp4','preserve_timestamps'=>false,'cpu_level'=>'very_low_desync_risk'];
+        return ['name'=>'copy_video_audio_mpegts_remux','description'=>'prepared fast remux: copy H.264 video and selected audio track into MPEG-TS HLS','video_args'=>['-c:v copy'],'audio_args'=>['-c:a copy'],'segment_type'=>'mpegts','segment_ext'=>'ts','preserve_timestamps'=>true,'cpu_level'=>'very_low_original_ts_remux'];
     }
     if($quality==='lowcpu'){ $w=854; $preset='ultrafast'; $crf='31'; $thr='1'; $ab='112k'; $cpu='low_controlled'; }
     elseif($quality==='balanced'){ $w=1280; $preset='veryfast'; $crf='25'; $thr='2'; $ab='160k'; $cpu='medium'; }

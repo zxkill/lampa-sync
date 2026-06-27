@@ -24,7 +24,7 @@
   // URL строятся относительно самого JS-файла, чтобы плагин не был привязан к конкретному домену.
   const PLAYER_URL = (window.LAMPA_SYNC_CONFIG && window.LAMPA_SYNC_CONFIG.playerUrl) || joinBase(PLUGIN_BASE_URL, 'player.html');
   const PREPARE_API_URL = (window.LAMPA_SYNC_CONFIG && window.LAMPA_SYNC_CONFIG.apiUrl) || joinBase(PLUGIN_BASE_URL, 'api.php');
-  const DEFAULT_QUALITY = (window.LAMPA_SYNC_CONFIG && window.LAMPA_SYNC_CONFIG.quality) || 'balanced'; // lowcpu | fast | balanced | safe | ultra
+  const DEFAULT_QUALITY = (window.LAMPA_SYNC_CONFIG && window.LAMPA_SYNC_CONFIG.quality) || 'balanced'; // copy | lowcpu | fast | balanced | safe | ultra
 
   const STORAGE_SYNC_API_URL = (window.LAMPA_SYNC_CONFIG && window.LAMPA_SYNC_CONFIG.progressApiUrl) || joinBase(PLUGIN_BASE_URL, 'progress.php');
 
@@ -33,6 +33,7 @@
   const STORAGE_SYNC_DEVICE_KEY = 'lampa_sync_storage_device_id';
   const QUALITY_SETTING_KEY = STORAGE_SYNC_PLUGIN_ID + '_quality';
   const QUALITY_PRESETS = {
+    copy: 'Быстрый TS remux / copy video+audio',
     lowcpu: 'Экономия CPU / ниже качество',
     fast: 'Быстро / нормальное качество',
     balanced: 'Хорошее качество',
@@ -216,7 +217,7 @@
     bindEvents();
     startStorageSyncWhenReady();
 
-    console.log('[Lampa Sync] enabled: iframe overlay + HLS/FFmpeg + clean localStorage sync v8.11-progress-stream-id-fix');
+    console.log('[Lampa Sync] enabled: iframe overlay + HLS/FFmpeg + clean localStorage sync v8.14-copy-ts-remux-preset');
   }
 
   // Открывает наш player.html поверх интерфейса Lampa в iframe.
@@ -599,6 +600,7 @@
 
       const url = urls[0];
       const title = guessPrepareTitleFromMenu(params, url);
+      const timelineHashes = getCurrentActivityTimelineHashes(params).join(',');
 
       showPrepareMessage('Добавляю в очередь...');
 
@@ -608,6 +610,7 @@
         '&quality=' + encodeURIComponent(getQualityPreset()) +
         '&title=' + encodeURIComponent(title) +
         '&url=' + encodeURIComponent(url) +
+        (timelineHashes ? '&timeline_hashes=' + encodeURIComponent(timelineHashes) : '') +
         '&t=' + Date.now();
 
       const r = await fetch(api, { cache: 'no-store' });
@@ -758,6 +761,30 @@
       'плеер': 1,
       'player': 1
     }[s];
+  }
+
+  // Собирает hash-и текущей карточки/Activity для будущего зеркалирования file_view.
+  function getCurrentActivityTimelineHashes(params) {
+    const candidates = [];
+
+    function addList(list) {
+      (list || []).forEach(function (item) {
+        if (item && candidates.indexOf(item) < 0) candidates.push(item);
+      });
+    }
+
+    try {
+      const active = window.Lampa && Lampa.Activity && typeof Lampa.Activity.active === 'function'
+        ? Lampa.Activity.active()
+        : null;
+      if (active) addList(getTimelineHashCandidates(active, null, null));
+    } catch (e) {}
+
+    try {
+      if (params && typeof params === 'object') addList(getTimelineHashCandidates(params, null, null));
+    } catch (e) {}
+
+    return candidates;
   }
 
   // Берёт заголовок текущей Activity Lampa как fallback.
@@ -2000,7 +2027,7 @@
         values: QUALITY_PRESETS,
         defaultValue: normalizeQuality(DEFAULT_QUALITY),
         title: 'Качество конвертации',
-        description: 'Профиль FFmpeg для онлайн-просмотра и подготовки через меню Lampa. По умолчанию — хорошее качество.',
+        description: 'Профиль FFmpeg для онлайн-просмотра и подготовки через меню Lampa. По умолчанию — хорошее качество. TS remux/copy почти не грузит CPU и не пережимает видео/аудио, но может быть совместим не со всеми браузерами и кодеками.',
         onChange: function (value) {
           try { Lampa.Storage.set(QUALITY_SETTING_KEY, normalizeQuality(value)); } catch (e) {}
         }
